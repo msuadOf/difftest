@@ -1,0 +1,46 @@
+
+Discarded input sections
+
+ .text          0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccg52oMH.o
+ .data          0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccg52oMH.o
+ .bss           0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccg52oMH.o
+ .riscv.attributes
+                0x0000000000000000       0x37 /home/baiyifan/.claude/tmp/ccg52oMH.o
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+RAM              0x0000000080000000 0x0000000008000000 xrw
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+LOAD /home/baiyifan/.claude/tmp/ccg52oMH.o
+
+.text           0x0000000080000000      0x142
+ *(.text.init)
+ .text.init     0x0000000080000000      0x142 /home/baiyifan/.claude/tmp/ccg52oMH.o
+                0x0000000080000000                _start
+ *(.text*)
+
+.rodata
+ *(.rodata*)
+
+.data
+ *(.data*)
+
+.bss            0x0000000080000142        0x0
+                0x0000000080000142                __bss_start = .
+ *(.bss*)
+ *(COMMON)
+                0x0000000080000142                __bss_end = .
+
+/DISCARD/
+ *(.comment)
+ *(.note*)
+ *(.eh_frame*)
+ *(.gnu.debuglink)
+ *(.gnu.attributes)
+ *(.ARM.attributes)
+ *(.riscv.attributes)
+OUTPUT(build/rv32d_sltu_x0_x31_x1_Retire_Success.elf elf32-littleriscv)

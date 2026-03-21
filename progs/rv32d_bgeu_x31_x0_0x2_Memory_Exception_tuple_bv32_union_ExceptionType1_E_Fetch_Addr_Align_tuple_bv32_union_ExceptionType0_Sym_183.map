@@ -1,0 +1,46 @@
+
+Discarded input sections
+
+ .text          0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccQDm00F.o
+ .data          0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccQDm00F.o
+ .bss           0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccQDm00F.o
+ .riscv.attributes
+                0x0000000000000000       0x37 /home/baiyifan/.claude/tmp/ccQDm00F.o
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+RAM              0x0000000080000000 0x0000000008000000 xrw
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+LOAD /home/baiyifan/.claude/tmp/ccQDm00F.o
+
+.text           0x0000000080000000      0x142
+ *(.text.init)
+ .text.init     0x0000000080000000      0x142 /home/baiyifan/.claude/tmp/ccQDm00F.o
+                0x0000000080000000                _start
+ *(.text*)
+
+.rodata
+ *(.rodata*)
+
+.data
+ *(.data*)
+
+.bss            0x0000000080000142        0x0
+                0x0000000080000142                __bss_start = .
+ *(.bss*)
+ *(COMMON)
+                0x0000000080000142                __bss_end = .
+
+/DISCARD/
+ *(.comment)
+ *(.note*)
+ *(.eh_frame*)
+ *(.gnu.debuglink)
+ *(.gnu.attributes)
+ *(.ARM.attributes)
+ *(.riscv.attributes)
+OUTPUT(build/rv32d_bgeu_x31_x0_0x2_Memory_Exception_tuple_bv32_union_ExceptionType1_E_Fetch_Addr_Align_tuple_bv32_union_ExceptionType0_Sym_183.elf elf32-littleriscv)

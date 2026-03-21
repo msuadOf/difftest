@@ -1,0 +1,46 @@
+
+Discarded input sections
+
+ .text          0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccAxATeT.o
+ .data          0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccAxATeT.o
+ .bss           0x0000000000000000        0x0 /home/baiyifan/.claude/tmp/ccAxATeT.o
+ .riscv.attributes
+                0x0000000000000000       0x37 /home/baiyifan/.claude/tmp/ccAxATeT.o
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+RAM              0x0000000080000000 0x0000000008000000 xrw
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+LOAD /home/baiyifan/.claude/tmp/ccAxATeT.o
+
+.text           0x0000000080000000      0x142
+ *(.text.init)
+ .text.init     0x0000000080000000      0x142 /home/baiyifan/.claude/tmp/ccAxATeT.o
+                0x0000000080000000                _start
+ *(.text*)
+
+.rodata
+ *(.rodata*)
+
+.data
+ *(.data*)
+
+.bss            0x0000000080000142        0x0
+                0x0000000080000142                __bss_start = .
+ *(.bss*)
+ *(COMMON)
+                0x0000000080000142                __bss_end = .
+
+/DISCARD/
+ *(.comment)
+ *(.note*)
+ *(.eh_frame*)
+ *(.gnu.debuglink)
+ *(.gnu.attributes)
+ *(.ARM.attributes)
+ *(.riscv.attributes)
+OUTPUT(build/rv32d_ecall_Trap_tuple_enum_Privilege_union_ctl_result_bv322_Sym_8_tuple_enum_Privilege_union_ctl_result_bv320_Sym_6_tuple_enum_Privilege_union_ctl_result_bv321_CTL_TRAP_trap_E_U_EnvCall_excinfo_None_b_ext_None_u.elf elf32-littleriscv)
