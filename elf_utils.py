@@ -249,3 +249,206 @@ def get_elf_isa_width(elf_path):
                 return 'rv32'
 
     return None
+
+
+def bin_to_elf(bin_path, output_elf_path=None, isa_width='rv64', entry_addr=DRAM_BASE):
+    """
+    Convert a raw binary file (.bin) to a minimal RISC-V ELF file.
+
+    This creates a minimal ELF wrapper around the binary data with:
+    - .text section containing the binary code
+    - Basic symbols (_start, _end_main, __bss_start, __bss_end)
+    - Proper entry point
+
+    Args:
+        bin_path: Path to the input .bin file
+        output_elf_path: Path for the output ELF file (default: same as input with .elf)
+        isa_width: ISA width ('rv32' or 'rv64')
+        entry_addr: Entry point address (default: DRAM_BASE)
+
+    Returns:
+        Path to the generated ELF file
+    """
+    if not os.path.isfile(bin_path):
+        raise FileNotFoundError(f"Binary file not found: {bin_path}")
+
+    if output_elf_path is None:
+        base = os.path.splitext(bin_path)[0]
+        output_elf_path = base + '.elf'
+
+    with open(bin_path, 'rb') as f:
+        binary_data = f.read()
+
+    # Select compiler flags based on ISA width
+    if isa_width == 'rv32':
+        march = '-march=rv32g'
+        mabi = '-mabi=ilp32'
+    else:
+        march = '-march=rv64g'
+        mabi = '-mabi=lp64'
+
+    # Create a temporary assembly file that includes the binary data
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.S', delete=False) as asm_file:
+        asm_path = asm_file.name
+
+        # Align binary data to 4 bytes
+        padding = len(binary_data) % 4
+        if padding != 0:
+            binary_data += b'\x00' * (4 - padding)
+
+        # Convert binary data to .word directives
+        words = []
+        for i in range(0, len(binary_data), 4):
+            word = struct.unpack_from('<I', binary_data, i)[0]
+            words.append(f'    .word 0x{word:08x}')
+
+        binary_code = '\n'.join(words)
+
+        # Generate minimal ELF assembly with basic symbols
+        asm_content = f'''# Auto-generated ELF wrapper for binary file
+# Source: {os.path.basename(bin_path)}
+# ISA Width: {isa_width}
+
+.section .text.init
+.align 6
+.global _start
+_start:
+    # ---- Binary data from {os.path.basename(bin_path)} ----
+{binary_code}
+    # ---- End binary data ----
+
+.global _end_main
+_end_main:
+    unimp
+
+.global __bss_start
+__bss_start:
+    .skip 0
+
+.global __bss_end
+__bss_end:
+    .skip 0
+'''
+
+        asm_file.write(asm_content)
+
+    # Get link.ld path from template directory
+    template_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        'difuzz-rtl', 'Fuzzer', 'Template'
+    )
+    link_ld = os.path.join(template_dir, 'include', 'link.ld')
+
+    # Compile to ELF
+    cc = 'riscv64-unknown-elf-gcc'
+    cc_args = [
+        cc,
+        march, mabi,
+        '-static', '-mcmodel=medany',
+        '-fvisibility=hidden',
+        '-nostdlib', '-nostartfiles',
+        '-T', link_ld,
+        '-Wl,--defsym=_start={:#x}'.format(entry_addr),
+        asm_path,
+        '-o', output_elf_path
+    ]
+
+    ret = subprocess.run(cc_args, capture_output=True, text=True)
+    if ret.returncode != 0:
+        # Clean up temp file
+        os.unlink(asm_path)
+        raise RuntimeError(
+            f"Failed to compile binary to ELF:\n{ret.stderr}\nCommand: {' '.join(cc_args)}"
+        )
+
+    # Clean up temp file
+    os.unlink(asm_path)
+
+    return output_elf_path
+
+
+def extract_data_sections(elf_path, max_sections=6):
+    """
+    Extract data sections from an ELF file for use in signature comparison.
+
+    Uses objdump to extract .data, .rodata, and .sdata sections,
+    returning them as a list of byte arrays suitable for the
+    _random_data* regions used by DifuzzRTL's signature infrastructure.
+
+    Args:
+        elf_path: Path to the ELF file
+        max_sections: Maximum number of data sections to extract (default: 6)
+
+    Returns:
+        List of (start_addr, end_addr, bytes) tuples, one per data section.
+        Returns empty list if no data sections found or on error.
+    """
+    if not os.path.isfile(elf_path):
+        raise FileNotFoundError(f"ELF file not found: {elf_path}")
+
+    # Use objdump to get section information
+    result = subprocess.run(
+        ['riscv64-unknown-elf-objdump', '-h', elf_path],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        # Fallback to system objdump
+        result = subprocess.run(
+            ['objdump', '-h', elf_path],
+            capture_output=True, text=True
+        )
+
+    if result.returncode != 0:
+        # Can't extract sections, return empty
+        return []
+
+    # Parse section headers to find data sections
+    data_sections = []
+    for line in result.stdout.split('\n'):
+        parts = line.split()
+        if len(parts) < 6:
+            continue
+
+        section_name = parts[1]
+        if section_name in ['.data', '.rodata', '.sdata', '.srodata']:
+            try:
+                size = int(parts[2], 16)
+                if size > 0:
+                    data_sections.append((section_name, size))
+            except ValueError:
+                continue
+
+    if not data_sections:
+        return []
+
+    # Use objcopy to extract each data section
+    extracted_data = []
+    for i, (section_name, size) in enumerate(data_sections[:max_sections]):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_file = os.path.join(tmpdir, f'section_{i}.bin')
+
+            # Extract this specific section
+            ret = subprocess.run(
+                ['riscv64-unknown-elf-objcopy', '-O', 'binary',
+                 '-j', section_name, elf_path, bin_file],
+                capture_output=True
+            )
+
+            if ret.returncode != 0:
+                # Try with system objcopy
+                ret = subprocess.run(
+                    ['objcopy', '-O', 'binary',
+                     '-j', section_name, elf_path, bin_file],
+                    capture_output=True
+                )
+
+            if ret.returncode == 0:
+                with open(bin_file, 'rb') as f:
+                    section_data = f.read()
+                    # Align to 8 bytes
+                    if len(section_data) % 8 != 0:
+                        section_data += b'\x00' * (8 - len(section_data) % 8)
+                    extracted_data.append(section_data)
+
+    return extracted_data

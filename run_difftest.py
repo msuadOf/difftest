@@ -17,7 +17,7 @@ import os
 import sys
 import tempfile
 
-from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width
+from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, bin_to_elf
 from elf_wrapper import wrap_elf_for_difftest
 from spike_runner import run_spike, find_spike
 
@@ -65,19 +65,25 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
     basename = os.path.splitext(os.path.basename(elf_path))[0]
 
-    # Check if ELF already has signature symbols
+    # Check if input is a .bin file and convert to ELF first
     is_bin_file = elf_path.lower().endswith('.bin')
 
     if is_bin_file:
-        # For .bin files, we need different handling
-        # Raw binaries don't have symbol tables, so we can't use the wrapper approach
-        result['status'] = 'ERROR'
-        result['details'] = (
-            f'Raw .bin files are not currently supported. '
-            f'The difftest tool requires ELF files with symbol tables for the wrapper approach. '
-            f'For .bin files, consider converting them to ELF format first.'
-        )
-        return result
+        if debug:
+            print(f'[Difftest] Converting .bin file to ELF format...')
+        try:
+            # For .bin files, we need to infer ISA width
+            # Default to rv64 for binaries, user can override if needed
+            isa_width = 'rv64'  # Default assumption
+            # Convert .bin to minimal ELF with basic symbols
+            converted_elf = bin_to_elf(elf_path, output_dir=output_dir, isa_width=isa_width)
+            if debug:
+                print(f'[Difftest] Converted .bin to ELF: {converted_elf}')
+            elf_path = converted_elf  # Use the converted ELF for further processing
+        except Exception as e:
+            result['status'] = 'ERROR'
+            result['details'] = f'Failed to convert .bin to ELF: {e}'
+            return result
 
     try:
         # First verify it's a RISC-V ELF

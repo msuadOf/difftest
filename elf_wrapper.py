@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import struct
 
-from elf_utils import get_symbols, elf_to_memory_dict, DRAM_BASE, get_elf_isa_width
+from elf_utils import get_symbols, elf_to_memory_dict, DRAM_BASE, get_elf_isa_width, extract_data_sections
 
 
 # Path to the DifuzzRTL template includes
@@ -104,40 +104,105 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
 
     user_code = '\n'.join(word_directives)
 
-    # Choose store instructions based on ISA width
+    # Extract data sections from original ELF to populate _random_data regions
+    data_sections = extract_data_sections(elf_path, max_sections=6)
+
+    # Generate data section assembly code
+    random_data_sections = []
+    for i in range(6):
+        section_name = f'_random_data{i}'
+        end_name = f'_end_data{i}'
+
+        if i < len(data_sections) and len(data_sections[i]) > 0:
+            # Convert binary data to .dword directives
+            section_data = data_sections[i]
+            data_words = []
+            for j in range(0, len(section_data), 8):
+                if j + 8 <= len(section_data):
+                    word = struct.unpack_from('<Q', section_data, j)[0]
+                    data_words.append(f'    .dword 0x{word:016x}')
+
+            data_code = '\n'.join(data_words)
+            random_data_sections.append(f'''.align 8
+.global {section_name}
+{section_name}:
+{data_code}
+.global {end_name}
+{end_name}:
+''')
+        else:
+            # Empty section
+            random_data_sections.append(f'''.align 8
+.global {section_name}
+{section_name}:
+.global {end_name}
+{end_name}:
+''')
+
+    random_data_code = '\n'.join(random_data_sections)
+
+    # IMPORTANT: Signature regions must be 8-byte aligned for signature_checker.py
+    # regardless of ISA width. For RV32, we use pairs of 32-bit stores per 8-byte slot.
+    #
+    # The compilation flags (-march/-mabi) still vary by ISA width.
+
+    # FP initialization: use different instructions for RV32 vs RV64
+    # RV32D has 64-bit FP registers but 32-bit integer registers, so use fmv.w.x
+    # RV64 has 64-bit integer and FP registers, so use fmv.d.x
     if is_rv32:
-        xreg_store = 'sw'   # 32-bit store for RV32
-        freg_store = 'fsw'  # 32-bit FP store for RV32 (RV32 only has 32-bit FP regs)
-        csr_store = 'sw'    # 32-bit store for CSRs
-        reg_size = 4        # 4 bytes per register
-        fp_move = 'fmv.w.x' # FP move instruction for RV32
+        fp_move = 'fmv.w.x'  # Move 32-bit integer to lower 32 bits of FP register
     else:
-        xreg_store = 'sd'   # 64-bit store for RV64
-        freg_store = 'fsd'  # 64-bit FP store for RV64
-        csr_store = 'sd'    # 64-bit store for CSRs
-        reg_size = 8        # 8 bytes per register
-        fp_move = 'fmv.d.x' # FP move instruction for RV64
+        fp_move = 'fmv.d.x'  # Move 64-bit integer to FP register
 
     # Generate register store instructions
-    xreg_stores = []
-    for i in range(32):
-        offset = i * reg_size
-        xreg_stores.append(f'    {xreg_store} x{i},{offset}(t5)')
+    if is_rv32:
+        # For RV32: use pairs of 32-bit stores to fill 8-byte aligned slots
+        # Each 8-byte slot gets two 32-bit values stored consecutively
+        xreg_stores = []
+        for i in range(32):
+            offset = i * 8
+            # Store lower 32 bits, then upper 32 bits (which is 0 for our use case)
+            xreg_stores.append(f'    sw x{i},{offset}(t5)')
+            xreg_stores.append(f'    sw x0,{offset+4}(t5)')  # Zero upper half
 
-    freg_stores = []
-    for i in range(32):
-        offset = i * reg_size
-        freg_stores.append(f'    {freg_store} f{i},{offset}(t5)')
+        freg_stores = []
+        for i in range(32):
+            offset = i * 8
+            # Use fsd for 64-bit FP registers (RV32D has 64-bit FP regs)
+            # signature_checker.py expects 64-bit values regardless of ISA width
+            freg_stores.append(f'    fsd f{i},{offset}(t5)')
 
-    csr_stores = []
-    csr_names = ['fflags', 'frm', 'fcsr', 'sstatus', 'sie', 'sscratch', 'sepc',
-                 'scause', 'stval', 'sip', 'satp', 'mhartid', 'mstatus',
-                 'medeleg', 'mie', 'mscratch', 'mepc', 'mcause', 'mtval', 'mip',
-                 'pmpcfg0', 'pmpaddr0', 'pmpaddr1', 'pmpaddr2', 'pmpaddr3',
-                 'pmpaddr4', 'pmpaddr5', 'pmpaddr6', 'pmpaddr7']
-    for i, csr_name in enumerate(csr_names):
-        offset = i * reg_size
-        csr_stores.append(f'    csrr t6, {csr_name}; {csr_store} t6,{offset}(t5)')
+        csr_stores = []
+        csr_names = ['fflags', 'frm', 'fcsr', 'sstatus', 'sie', 'sscratch', 'sepc',
+                     'scause', 'stval', 'sip', 'satp', 'mhartid', 'mstatus',
+                     'medeleg', 'mie', 'mscratch', 'mepc', 'mcause', 'mtval', 'mip',
+                     'pmpcfg0', 'pmpaddr0', 'pmpaddr1', 'pmpaddr2', 'pmpaddr3',
+                     'pmpaddr4', 'pmpaddr5', 'pmpaddr6', 'pmpaddr7']
+        for i, csr_name in enumerate(csr_names):
+            offset = i * 8
+            csr_stores.append(f'    csrr t6, {csr_name}; sw t6,{offset}(t5)')
+            csr_stores.append(f'    sw t0,{offset+4}(t5)')  # Zero upper half
+    else:
+        # For RV64: use single 64-bit stores
+        xreg_stores = []
+        for i in range(32):
+            offset = i * 8
+            xreg_stores.append(f'    sd x{i},{offset}(t5)')
+
+        freg_stores = []
+        for i in range(32):
+            offset = i * 8
+            freg_stores.append(f'    fsd f{i},{offset}(t5)')
+
+        csr_stores = []
+        csr_names = ['fflags', 'frm', 'fcsr', 'sstatus', 'sie', 'sscratch', 'sepc',
+                     'scause', 'stval', 'sip', 'satp', 'mhartid', 'mstatus',
+                     'medeleg', 'mie', 'mscratch', 'mepc', 'mcause', 'mtval', 'mip',
+                     'pmpcfg0', 'pmpaddr0', 'pmpaddr1', 'pmpaddr2', 'pmpaddr3',
+                     'pmpaddr4', 'pmpaddr5', 'pmpaddr6', 'pmpaddr7']
+        for i, csr_name in enumerate(csr_names):
+            offset = i * 8
+            csr_stores.append(f'    csrr t6, {csr_name}; sd t6,{offset}(t5)')
 
     # Generate FP register initialization instructions
     fp_init = []
@@ -149,11 +214,12 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
     csr_store_code = '\n'.join(csr_stores)
     fp_init_code = '\n'.join(fp_init)
 
-    # Generate data section directives
-    data_directive = '.word' if is_rv32 else '.dword'
-    align_directive = '.align 2' if is_rv32 else '.align 3'  # 4-byte or 8-byte align
+    # Generate data section directives (always 8-byte aligned for compatibility)
+    # signature_checker.py expects 8-byte alignment regardless of ISA width
+    data_directive = '.dword'  # Always use 8-byte (.dword/.quad) for signature compatibility
+    align_directive = '.align 3'  # 8-byte align
 
-    # Generate xreg output data
+    # Generate xreg output data (always 8-byte aligned)
     xreg_data = []
     xreg_data.append(f'{align_directive}')
     xreg_data.append('xreg_output_data:')
@@ -161,14 +227,14 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
         xreg_data.append(f'.global reg_x{i}_output')
         xreg_data.append(f'reg_x{i}_output:  {data_directive} 0')
 
-    # Generate freg output data
+    # Generate freg output data (always 8-byte aligned)
     freg_data = []
     freg_data.append(f'{align_directive}')
     freg_data.append('freg_output_data:')
     for i in range(32):
         freg_data.append(f'reg_f{i}_output:  {data_directive} 0')
 
-    # Generate CSR output data
+    # Generate CSR output data (always 8-byte aligned)
     csr_data = []
     csr_data.append(f'{align_directive}')
     csr_data.append('csr_output_data:')
@@ -342,42 +408,9 @@ begin_signature:
 .global end_signature
 end_signature:
 
-# Empty random data sections (required by signature_checker)
-.align 8
-.global _random_data0
-_random_data0:
-.global _end_data0
-_end_data0:
-
-.align 8
-.global _random_data1
-_random_data1:
-.global _end_data1
-_end_data1:
-
-.align 8
-.global _random_data2
-_random_data2:
-.global _end_data2
-_end_data2:
-
-.align 8
-.global _random_data3
-_random_data3:
-.global _end_data3
-_end_data3:
-
-.align 8
-.global _random_data4
-_random_data4:
-.global _end_data4
-_end_data4:
-
-.align 8
-.global _random_data5
-_random_data5:
-.global _end_data5
-_end_data5:
+# Data sections for signature comparison
+# Populated from original ELF's .data, .rodata sections
+{random_data_code}
 """
 
     with open(output_asm_path, 'w') as f:
@@ -414,12 +447,15 @@ def compile_wrapper(asm_path, original_elf_path=None, output_elf_path=None, outp
             pass
 
     # Select compiler flags based on ISA width
+    # For RV32: use ilp32 ABI with g extension (includes f for single-precision FP)
+    # For RV64: use lp64 ABI with g extension (includes f for single-precision FP)
+    # Note: We use fmv.w.x for FP init in RV32, which works with F extension
     if isa_width == 'rv32':
-        march = '-march=rv32g'
-        mabi = '-mabi=ilp32'
+        march = '-march=rv32imafdc'  # Include I M A F D C extensions for RV32
+        mabi = '-mabi=ilp32'         # ilp32 ABI for RV32
     else:
-        march = '-march=rv64g'
-        mabi = '-mabi=lp64'
+        march = '-march=rv64imafdc'  # Include I M A F D C extensions for RV64
+        mabi = '-mabi=lp64'          # lp64 ABI for RV64
 
     cc = 'riscv64-unknown-elf-gcc'
     cc_args = [
