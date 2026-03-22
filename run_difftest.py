@@ -29,6 +29,14 @@ sys.path.insert(0, src_path)
 sys.path.insert(0, fuzzer_path)
 from signature_checker import sigChecker
 
+# Import RTL runner and utilities
+try:
+    from rtl_runner import run_rtl_simulation, SUCCESS, ASSERTION_FAIL, TIME_OUT, ILL_MEM
+    from rtl_input import build_rtl_input_bundle
+    RTL_AVAILABLE = True
+except ImportError as e:
+    RTL_AVAILABLE = False
+
 
 def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=False, timeout=30, isa_only=False):
     """
@@ -117,6 +125,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
     if has_signature_symbols(symbols):
         # ELF already has signature infrastructure, use directly
         wrapped_elf = elf_path
+        wrapped_hex = elf_path.replace('.elf', '.hex')  # Assume hex exists
         wrapped_symbols = symbols
         if debug:
             print(f'[Difftest] ELF already has signature symbols, using directly')
@@ -127,6 +136,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         try:
             wrap_result = wrap_elf_for_difftest(elf_path, output_dir)
             wrapped_elf = wrap_result['elf']
+            wrapped_hex = wrap_result['hex']
             wrapped_symbols = wrap_result['symbols']
             if debug:
                 print(f'[Difftest] Wrapped ELF: {wrapped_elf}')
@@ -172,37 +182,101 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         return result
 
     # Perform signature comparison
-    # For true end-to-end difftest, RTL signature is required
-    if rtl_sig_file is None:
-        if isa_only:
-            # ISA-only mode: Spike execution succeeded, no RTL comparison
-            result['status'] = 'SPIKE_OK'
-            result['details'] = (
-                f'ISA-only mode: Spike execution successful. '
-                f'Signature: {isa_sig} ({os.path.getsize(isa_sig)} bytes). '
-                f'No RTL comparison performed (use --rtl-sig for end-to-end difftest).'
-            )
+    if isa_only:
+        # ISA-only mode: Spike execution succeeded, no RTL comparison
+        result['status'] = 'SPIKE_OK'
+        result['details'] = (
+            f'ISA-only mode: Spike execution successful. '
+            f'Signature: {isa_sig} ({os.path.getsize(isa_sig)} bytes). '
+            f'No RTL comparison performed (omit --isa-only for end-to-end difftest).'
+        )
+        return result
+
+    # End-to-end mode: Run RTL simulation
+    rtl_sig_path = os.path.join(output_dir, basename + '_rtl_sig.txt')
+
+    # Check if RTL runner is available
+    if not RTL_AVAILABLE:
+        result['status'] = 'ERROR'
+        result['details'] = (
+            f'RTL runner not available. '
+            f'This may be due to missing dependencies (cocotb/verilator). '
+            f'Use --isa-only for Spike-only testing, or --rtl-sig for pre-generated RTL signature.'
+        )
+        return result
+
+    # Build RTL input bundle
+    try:
+        rtl_input_bundle = build_rtl_input_bundle(
+            wrapped_elf_path=wrapped_elf,
+            wrapped_hex_path=wrapped_hex,
+            symbols=wrapped_symbols,
+            max_cycles=timeout * 100  # Convert seconds to cycles (approximate)
+        )
+    except Exception as e:
+        result['status'] = 'ERROR'
+        result['details'] = f'Failed to build RTL input bundle: {e}'
+        return result
+
+    # Run RTL simulation
+    try:
+        if debug:
+            print(f'[Difftest] Running RTL simulation...')
+
+        rtl_result_code, _ = run_rtl_simulation(
+            rtl_input_bundle,
+            rtl_sig_path=rtl_sig_path,
+            debug=debug,
+            timeout=timeout * 2  # Give RTL more time
+        )
+
+        if debug:
+            print(f'[Difftest] RTL simulation result: {rtl_result_code}')
+
+        # Check RTL result
+        if rtl_result_code == SUCCESS:
+            if debug:
+                print(f'[Difftest] RTL simulation successful')
+        elif rtl_result_code == TIME_OUT:
+            result['status'] = 'ERROR'
+            result['details'] = 'RTL simulation timed out'
+            return result
+        elif rtl_result_code == ASSERTION_FAIL:
+            result['status'] = 'ERROR'
+            result['details'] = 'RTL simulation assertion failure'
+            return result
+        elif rtl_result_code == ILL_MEM:
+            result['status'] = 'ERROR'
+            result['details'] = 'RTL simulation illegal memory access'
             return result
         else:
-            # End-to-end mode requires RTL signature
             result['status'] = 'ERROR'
-            result['details'] = (
-                f'RTL signature file required for end-to-end difftest. '
-                f'Use --rtl-sig option to specify pre-generated RTL signature, '
-                f'or --isa-only for Spike-only execution (not full difftest). '
-                f'ISA signature generated: {isa_sig}'
-            )
+            result['details'] = f'RTL simulation failed with code: {rtl_result_code}'
             return result
 
-    # Check if RTL signature file exists
-    if not os.path.isfile(rtl_sig_file):
+    except FileNotFoundError as e:
+        # RTL simulation not available (cocotb/verilator not set up)
         result['status'] = 'ERROR'
-        result['details'] = f'RTL signature file not found: {rtl_sig_file}'
+        result['details'] = (
+            f'RTL simulation not available: {e}. '
+            f'This may be due to missing cocotb/verilator environment. '
+            f'Use --isa-only for Spike-only testing, or set up RTL environment.'
+        )
+        return result
+    except Exception as e:
+        result['status'] = 'ERROR'
+        result['details'] = f'RTL simulation failed: {e}'
+        return result
+
+    # Check if RTL signature file was created
+    if not os.path.isfile(rtl_sig_path):
+        result['status'] = 'ERROR'
+        result['details'] = 'RTL simulation did not produce signature file'
         return result
 
     # Use DifuzzRTL's signature checker
     try:
-        checker = sigChecker(isa_sig, rtl_sig_file, debug=debug, minimizing=False)
+        checker = sigChecker(isa_sig, rtl_sig_path, debug=debug, minimizing=False)
         match = checker.check(wrapped_symbols)
 
         if match:
@@ -228,7 +302,7 @@ def main():
                        help='Directory containing ELF files')
 
     parser.add_argument('--pattern', type=str, default='*.elf',
-                        help='Glob pattern for ELF files (default: *.elf)')
+                        help='Glob pattern for program files (default: *.elf). Can be *.bin or other pattern.')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory for wrapped files and signatures')
     parser.add_argument('--timeout', type=int, default=30,

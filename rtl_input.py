@@ -29,7 +29,7 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
 
     # Extract data words from the _random_data sections
     # The data sections are populated from the original ELF's data sections
-    data = _extract_data_words_from_symbols(symbols)
+    data = _extract_data_words_from_symbols(symbols, hex_file=wrapped_hex_path)
 
     # Create rtlInput object (simple class for compatibility)
     class rtlInput:
@@ -49,9 +49,9 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
     )
 
 
-def _extract_data_words_from_symbols(symbols):
+def _extract_data_words_from_symbols(symbols, hex_file=None):
     """
-    Extract data words from the _random_data symbols.
+    Extract data words from the _random_data symbols in the wrapped ELF.
 
     The wrapper populates _random_data0..5 sections with data from the
     original ELF's .data/.rodata sections. This function extracts those
@@ -59,34 +59,61 @@ def _extract_data_words_from_symbols(symbols):
 
     Args:
         symbols: Symbol dictionary from the wrapped ELF
+        hex_file: Optional path to the wrapped hex file for reading actual data
 
     Returns:
         List of 64-bit integers representing the data words
     """
+    from elf_utils import elf_to_memory_dict
+
     data_words = []
 
-    for i in range(6):
-        data_start_sym = f'_random_data{i}'
-        data_end_sym = f'_end_data{i}'
+    # If we have the hex file, we can extract the actual data values
+    if hex_file and os.path.isfile(hex_file):
+        try:
+            # Load the wrapped ELF to get the actual memory contents
+            # We need to find the wrapped ELF path (same stem as hex file)
+            elf_path = os.path.splitext(hex_file)[0] + '.elf'
+            if os.path.isfile(elf_path):
+                memory = elf_to_memory_dict(elf_path)
 
-        if data_start_sym in symbols and data_end_sym in symbols:
-            data_start = symbols[data_start_sym]
-            data_end = symbols[data_end_sym]
+                for i in range(6):
+                    data_start_sym = f'_random_data{i}'
+                    data_end_sym = f'_end_data{i}'
 
-            # Calculate size in 64-bit words
-            size_bytes = data_end - data_start
-            size_words = size_bytes // 8
+                    if data_start_sym in symbols and data_end_sym in symbols:
+                        data_start = symbols[data_start_sym]
+                        data_end = symbols[data_end_sym]
 
-            # We can't extract the actual data values without reading the ELF,
-            # but we know the layout. For now, we'll return a list of placeholders
-            # that can be filled in during RTL simulation setup.
-            #
-            # The actual data values are embedded in the wrapped ELF's hex file,
-            # and the RTL simulator will extract them from there.
+                        # Extract data words from memory, 8-byte aligned
+                        addr = data_start & ~0x7  # Align down to 8 bytes
+                        end_addr = data_end
 
-            # Add placeholders for this data section
-            for _ in range(size_words):
-                data_words.append(0)  # Placeholder, will be filled by RTL sim
+                        while addr < end_addr:
+                            if addr in memory:
+                                data_words.append(memory[addr])
+                            addr += 8
+        except Exception as e:
+            # If extraction fails, fall back to placeholder
+            pass
+
+    # Fallback: if we couldn't extract actual data, use section sizes for placeholders
+    if not data_words:
+        for i in range(6):
+            data_start_sym = f'_random_data{i}'
+            data_end_sym = f'_end_data{i}'
+
+            if data_start_sym in symbols and data_end_sym in symbols:
+                data_start = symbols[data_start_sym]
+                data_end = symbols[data_end_sym]
+
+                # Calculate size in 64-bit words
+                size_bytes = data_end - data_start
+                size_words = size_bytes // 8
+
+                # Add placeholders for this data section
+                for _ in range(size_words):
+                    data_words.append(0)
 
     return data_words
 

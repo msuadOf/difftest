@@ -24,8 +24,8 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
     """
     Run RTL simulation using cocotb and the existing DifuzzRTL infrastructure.
 
-    This function uses the existing DifuzzRTL Makefile and host.py to run
-    the simulation, passing parameters through a JSON configuration file.
+    This function uses the single_program_test.py module under difuzz-rtl/Fuzzer
+    to run the simulation, passing parameters through environment variables.
 
     Args:
         rtl_input: rtlInput object with hexfile, intrfile, data, symbols, max_cycles
@@ -56,6 +56,11 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
     if not os.path.isfile(makefile_path):
         raise RuntimeError(f"DifuzzRTL Makefile not found: {makefile_path}")
 
+    # Check if single_program_test.py exists
+    test_module_path = os.path.join(fuzzer_dir, 'single_program_test.py')
+    if not os.path.isfile(test_module_path):
+        raise RuntimeError(f"Single program test module not found: {test_module_path}")
+
     # Create a temporary config file to pass parameters to the test
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         config_path = f.name
@@ -64,6 +69,7 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
         'hexfile': os.path.abspath(rtl_input.hexfile),
         'intrfile': os.path.abspath(rtl_input.intrfile) if rtl_input.intrfile else None,
         'rtl_sig_file': os.path.abspath(rtl_sig_path),
+        'data': rtl_input.data,
         'symbols': {k: v for k, v in rtl_input.symbols.items()},
         'max_cycles': rtl_input.max_cycles,
         'debug': debug,
@@ -79,12 +85,13 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
         env['RTL_CONFIG_FILE'] = config_path
         env['TOPLEVEL_LANG'] = 'verilog'
 
-        # Build the make command
+        # Build the make command to run the single program test
         make_cmd = [
             'make',
             '-C', fuzzer_dir,
             'SIM=verilator',
             f'VFILE={vfile.split()[1] if " " in vfile else vfile}',
+            'TESTCASE=single_program_test',
         ]
 
         if debug:
