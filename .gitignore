@@ -1,2 +1,14 @@
 plan.md
 draft.md
+
+# Humanize RLCR loop
+.humanize*
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test outputs
+/tmp/test_difftest*
+/tmp/final_test
