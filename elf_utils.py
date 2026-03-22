@@ -109,65 +109,164 @@ def elf_to_memory_dict(elf_path):
     """
     Load an ELF file into a memory dictionary {addr: 64-bit value}
     suitable for RTL simulation.
-    Uses readelf to find loadable segments and objcopy to extract binary data.
+
+    Uses segment-accurate PT_LOAD-based loading that preserves each
+    segment's real virtual address and properly handles BSS regions.
     """
     if not os.path.isfile(elf_path):
         raise FileNotFoundError(f"ELF file not found: {elf_path}")
 
-    # Get program header info to determine load address
-    result = subprocess.run(
-        ['riscv64-unknown-elf-readelf', '-l', elf_path],
-        capture_output=True, text=True
-    )
+    # Read the ELF file directly to extract segment data
+    with open(elf_path, 'rb') as f:
+        elf_data = f.read()
 
-    load_addr = DRAM_BASE  # default
-    if result.returncode == 0:
-        for line in result.stdout.split('\n'):
-            stripped = line.strip()
-            if stripped.startswith('LOAD'):
-                parts = stripped.split()
-                if len(parts) >= 3:
-                    try:
-                        load_addr = int(parts[2], 16)
-                    except ValueError:
-                        pass
-                    break
+    # Parse ELF header
+    if len(elf_data) < 64 or elf_data[:4] != b'\x7fELF':
+        raise ValueError(f"Not a valid ELF file: {elf_path}")
 
-    # Convert to binary
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bin_path = os.path.join(tmpdir, 'output.bin')
-        objcopy_cmds = [
-            'riscv64-unknown-elf-objcopy',
-            'riscv64-linux-gnu-objcopy',
-        ]
-        converted = False
-        for objcopy in objcopy_cmds:
-            ret = subprocess.run(
-                [objcopy, elf_path, '-O', 'binary', bin_path],
-                capture_output=True
-            )
-            if ret.returncode == 0:
-                converted = True
-                break
+    elf_class = elf_data[4]  # 1 = 32-bit, 2 = 64-bit
+    elf_endian = '<' if elf_data[5] == 1 else '>'  # 1 = little, 2 = big
 
-        if not converted:
-            raise RuntimeError("Failed to convert ELF to binary")
+    if elf_class == 1:
+        # ELF32
+        e_phoff_fmt = 'I'
+        e_phentsize_fmt = 'H'
+        e_phnum_fmt = 'H'
+        p_type_fmt = 'I'
+        p_offset_fmt = 'I'
+        p_vaddr_fmt = 'I'
+        p_filesz_fmt = 'I'
+        p_memsz_fmt = 'I'
+        header_size = 52
+    else:
+        # ELF64
+        e_phoff_fmt = 'Q'
+        e_phentsize_fmt = 'H'
+        e_phnum_fmt = 'H'
+        p_type_fmt = 'I'
+        p_offset_fmt = 'Q'
+        p_vaddr_fmt = 'Q'
+        p_filesz_fmt = 'Q'
+        p_memsz_fmt = 'Q'
+        header_size = 64
 
-        with open(bin_path, 'rb') as f:
-            data = f.read()
+    # Extract program header info from ELF header
+    endian_fmt = elf_endian
+    e_phoff_offset = 28 if elf_class == 2 else 28  # Same offset for 32/64
+    e_phentsize_offset = 42 if elf_class == 2 else 42
+    e_phnum_offset = 44 if elf_class == 2 else 44
 
-    if not data:
-        raise ValueError(f"ELF file {elf_path} produced empty binary data")
+    # Parse program header table location
+    fmt_str = endian_fmt + e_phoff_fmt
+    e_phoff = struct.unpack_from(fmt_str, elf_data, e_phoff_offset)[0]
 
-    # Pad to 8-byte alignment
-    if len(data) % 8 != 0:
-        data += b'\x00' * (8 - len(data) % 8)
+    fmt_str = endian_fmt + e_phentsize_fmt
+    e_phentsize = struct.unpack_from(fmt_str, elf_data, e_phentsize_offset)[0]
 
+    fmt_str = endian_fmt + e_phnum_fmt
+    e_phnum = struct.unpack_from(fmt_str, elf_data, e_phnum_offset)[0]
+
+    # Parse each program header
+    load_segments = []
+    ph_offset = e_phoff
+
+    if elf_class == 1:
+        ph_size = 32
+        p_type_offset = 0
+        p_offset_offset = 4
+        p_vaddr_offset = 8
+        p_filesz_offset = 16
+        p_memsz_offset = 20
+    else:
+        ph_size = 56
+        p_type_offset = 0
+        p_offset_offset = 8
+        p_vaddr_offset = 16
+        p_filesz_offset = 32
+        p_memsz_offset = 40
+
+    for i in range(e_phnum):
+        if ph_offset + ph_size > len(elf_data):
+            break
+
+        fmt_str = endian_fmt + p_type_fmt
+        p_type = struct.unpack_from(fmt_str, elf_data, ph_offset + p_type_offset)[0]
+
+        if p_type == 1:  # PT_LOAD
+            fmt_str = endian_fmt + p_offset_fmt
+            p_offset = struct.unpack_from(fmt_str, elf_data, ph_offset + p_offset_offset)[0]
+
+            fmt_str = endian_fmt + p_vaddr_fmt
+            p_vaddr = struct.unpack_from(fmt_str, elf_data, ph_offset + p_vaddr_offset)[0]
+
+            fmt_str = endian_fmt + p_filesz_fmt
+            p_filesz = struct.unpack_from(fmt_str, elf_data, ph_offset + p_filesz_offset)[0]
+
+            fmt_str = endian_fmt + p_memsz_fmt
+            p_memsz = struct.unpack_from(fmt_str, elf_data, ph_offset + p_memsz_offset)[0]
+
+            load_segments.append({
+                'offset': p_offset,
+                'vaddr': p_vaddr,
+                'filesz': p_filesz,
+                'memsz': p_memsz,
+            })
+
+        ph_offset += e_phentsize
+
+    # Load each segment into memory dictionary
     memory = {}
-    for i in range(0, len(data), 8):
-        addr = load_addr + i
-        word = struct.unpack_from('<Q', data, i)[0]
-        memory[addr] = word
+
+    for seg in load_segments:
+        vaddr = seg['vaddr']
+        offset = seg['offset']
+        filesz = seg['filesz']
+        memsz = seg['memsz']
+
+        # Extract file data for this segment
+        if offset + filesz <= len(elf_data):
+            seg_data = elf_data[offset:offset + filesz]
+        else:
+            seg_data = b''
+            # Read what we can
+            if offset < len(elf_data):
+                seg_data = elf_data[offset:]
+
+        # Place data at virtual addresses (8-byte aligned)
+        aligned_addr = vaddr & ~0x7  # Align down to 8 bytes
+
+        # Handle alignment offset
+        addr_offset = vaddr - aligned_addr
+
+        # Create a buffer with alignment padding
+        if addr_offset > 0:
+            padded_data = b'\x00' * addr_offset + seg_data
+        else:
+            padded_data = seg_data
+
+        # Pad to 8-byte alignment
+        if len(padded_data) % 8 != 0:
+            padded_data += b'\x00' * (8 - len(padded_data) % 8)
+
+        # Store file data
+        for i in range(0, len(padded_data), 8):
+            addr = aligned_addr + i
+            if i + 8 <= len(padded_data):
+                word = struct.unpack_from('<Q', padded_data, i)[0]
+                memory[addr] = word
+
+        # Zero-fill BSS region (memsz > filesz)
+        if memsz > filesz:
+            bss_start = vaddr + filesz
+            bss_end = vaddr + memsz
+            bss_start_aligned = bss_start & ~0x7
+
+            for addr in range(bss_start_aligned, bss_end, 8):
+                if addr not in memory:
+                    memory[addr] = 0
+
+    if not memory:
+        raise ValueError(f"ELF file {elf_path} produced no loadable segments")
 
     return memory
 
@@ -251,7 +350,59 @@ def get_elf_isa_width(elf_path):
     return None
 
 
-def bin_to_elf(bin_path, output_elf_path=None, isa_width='rv64', entry_addr=DRAM_BASE):
+def resolve_bin_to_elf(bin_path):
+    """
+    Resolve a .bin file to its corresponding .elf file for corpus processing.
+
+    For corpus .bin files that have a same-stem sibling .elf, this returns
+    the sibling .elf path and extracts metadata from it. For standalone .bin files,
+    this generates a minimal ELF.
+
+    Args:
+        bin_path: Path to the .bin file
+
+    Returns:
+        Tuple of (elf_path, isa_width, symbols) where:
+        - elf_path: Path to use for ELF processing (sibling .elf or generated)
+        - isa_width: 'rv32' or 'rv64'
+        - symbols: Symbol dictionary from the ELF
+    """
+    if not os.path.isfile(bin_path):
+        raise FileNotFoundError(f"Binary file not found: {bin_path}")
+
+    # Check for same-stem sibling .elf file
+    bin_dir = os.path.dirname(bin_path)
+    bin_basename = os.path.basename(bin_path)
+    stem = os.path.splitext(bin_basename)[0]  # Remove .bin extension
+
+    # Look for same-stem .elf file
+    sibling_elf = os.path.join(bin_dir, stem + '.elf')
+
+    if os.path.isfile(sibling_elf):
+        # Use the sibling .elf file
+        try:
+            isa_width = get_elf_isa_width(sibling_elf)
+            symbols = get_symbols(sibling_elf)
+            return (sibling_elf, isa_width, symbols)
+        except Exception as e:
+            # If sibling .elf is invalid, fall through to generation
+            pass
+
+    # No valid sibling .elf found, generate a minimal ELF
+    # For generation, we need to detect ISA width from the binary itself
+    # Default to rv64 for standalone binaries
+    isa_width = 'rv64'
+
+    # Generate minimal ELF
+    generated_elf = bin_to_elf(bin_path, output_elf_path=None, isa_width=isa_width)
+
+    # Extract symbols from generated ELF
+    symbols = get_symbols(generated_elf)
+
+    return (generated_elf, isa_width, symbols)
+
+
+def bin_to_elf(bin_path, output_elf_path=None, isa_width='rv64', entry_addr=DRAM_BASE, output_dir=None):
     """
     Convert a raw binary file (.bin) to a minimal RISC-V ELF file.
 
@@ -265,6 +416,7 @@ def bin_to_elf(bin_path, output_elf_path=None, isa_width='rv64', entry_addr=DRAM
         output_elf_path: Path for the output ELF file (default: same as input with .elf)
         isa_width: ISA width ('rv32' or 'rv64')
         entry_addr: Entry point address (default: DRAM_BASE)
+        output_dir: Directory for output files (overrides output_elf_path directory)
 
     Returns:
         Path to the generated ELF file
@@ -273,8 +425,12 @@ def bin_to_elf(bin_path, output_elf_path=None, isa_width='rv64', entry_addr=DRAM
         raise FileNotFoundError(f"Binary file not found: {bin_path}")
 
     if output_elf_path is None:
-        base = os.path.splitext(bin_path)[0]
-        output_elf_path = base + '.elf'
+        if output_dir is not None:
+            base = os.path.splitext(os.path.basename(bin_path))[0]
+            output_elf_path = os.path.join(output_dir, base + '.elf')
+        else:
+            base = os.path.splitext(bin_path)[0]
+            output_elf_path = base + '.elf'
 
     with open(bin_path, 'rb') as f:
         binary_data = f.read()

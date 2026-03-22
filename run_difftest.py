@@ -17,7 +17,7 @@ import os
 import sys
 import tempfile
 
-from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, bin_to_elf
+from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, resolve_bin_to_elf
 from elf_wrapper import wrap_elf_for_difftest
 from spike_runner import run_spike, find_spike
 
@@ -30,7 +30,7 @@ sys.path.insert(0, fuzzer_path)
 from signature_checker import sigChecker
 
 
-def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=False, timeout=30):
+def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=False, timeout=30, isa_only=False):
     """
     Run difftest on a single ELF file.
 
@@ -65,25 +65,42 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
     basename = os.path.splitext(os.path.basename(elf_path))[0]
 
-    # Check if input is a .bin file and convert to ELF first
+    # Check if input is a .bin file and resolve to ELF
     is_bin_file = elf_path.lower().endswith('.bin')
 
     if is_bin_file:
         if debug:
-            print(f'[Difftest] Converting .bin file to ELF format...')
+            print(f'[Difftest] Resolving .bin file to ELF...')
+
         try:
-            # For .bin files, we need to infer ISA width
-            # Default to rv64 for binaries, user can override if needed
-            isa_width = 'rv64'  # Default assumption
-            # Convert .bin to minimal ELF with basic symbols
-            converted_elf = bin_to_elf(elf_path, output_dir=output_dir, isa_width=isa_width)
+            # Resolve .bin to ELF (uses sibling .elf if available, otherwise generates minimal ELF)
+            resolved_elf, isa_width, resolved_symbols = resolve_bin_to_elf(elf_path)
+
             if debug:
-                print(f'[Difftest] Converted .bin to ELF: {converted_elf}')
-            elf_path = converted_elf  # Use the converted ELF for further processing
+                print(f'[Difftest] Resolved .bin to ELF: {resolved_elf}')
+                print(f'[Difftest] Detected ISA: {isa_width}')
+
+            elf_path = resolved_elf  # Use the resolved ELF for further processing
+            # Use the resolved symbols and ISA width directly
+            symbols = resolved_symbols
+
         except Exception as e:
             result['status'] = 'ERROR'
-            result['details'] = f'Failed to convert .bin to ELF: {e}'
+            result['details'] = f'Failed to resolve .bin file: {e}'
             return result
+
+    try:
+        # First verify it's a RISC-V ELF
+        if not is_bin_file:  # Only detect if we didn't already resolve from .bin
+            isa_width = get_elf_isa_width(elf_path)
+            symbols = get_symbols(elf_path)
+    except ValueError as e:
+        result['status'] = 'ERROR'
+        result['details'] = f'Not a valid RISC-V ELF file: {e}'
+        return result
+    except Exception as e:
+        result['details'] = f'Failed to read symbols: {e}'
+        return result
 
     try:
         # First verify it's a RISC-V ELF
@@ -155,15 +172,27 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         return result
 
     # Perform signature comparison
-    # Note: RTL signature file is required for comparison
+    # For true end-to-end difftest, RTL signature is required
     if rtl_sig_file is None:
-        result['status'] = 'SPIKE_OK'
-        result['details'] = (
-            f'Spike execution successful. '
-            f'Signature: {isa_sig} ({os.path.getsize(isa_sig)} bytes). '
-            f'RTL signature file required for comparison (--rtl-sig option).'
-        )
-        return result
+        if isa_only:
+            # ISA-only mode: Spike execution succeeded, no RTL comparison
+            result['status'] = 'SPIKE_OK'
+            result['details'] = (
+                f'ISA-only mode: Spike execution successful. '
+                f'Signature: {isa_sig} ({os.path.getsize(isa_sig)} bytes). '
+                f'No RTL comparison performed (use --rtl-sig for end-to-end difftest).'
+            )
+            return result
+        else:
+            # End-to-end mode requires RTL signature
+            result['status'] = 'ERROR'
+            result['details'] = (
+                f'RTL signature file required for end-to-end difftest. '
+                f'Use --rtl-sig option to specify pre-generated RTL signature, '
+                f'or --isa-only for Spike-only execution (not full difftest). '
+                f'ISA signature generated: {isa_sig}'
+            )
+            return result
 
     # Check if RTL signature file exists
     if not os.path.isfile(rtl_sig_file):
@@ -205,7 +234,9 @@ def main():
     parser.add_argument('--timeout', type=int, default=30,
                         help='Spike timeout in seconds (default: 30)')
     parser.add_argument('--rtl-sig', type=str, default=None,
-                        help='Pre-generated RTL signature file for comparison')
+                        help='Pre-generated RTL signature file for comparison (required for end-to-end difftest)')
+    parser.add_argument('--isa-only', action='store_true',
+                        help='Run Spike only, skip RTL comparison (for testing/debug, not end-to-end difftest)')
     parser.add_argument('--debug', action='store_true',
                         help='Enable verbose debug output')
 
@@ -253,7 +284,8 @@ def main():
             output_dir=elf_output_dir,
             rtl_sig_file=args.rtl_sig,
             debug=args.debug,
-            timeout=args.timeout
+            timeout=args.timeout,
+            isa_only=args.isa_only
         )
         results.append(result)
 

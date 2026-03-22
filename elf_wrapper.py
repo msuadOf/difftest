@@ -147,23 +147,31 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
     # The compilation flags (-march/-mabi) still vary by ISA width.
 
     # FP initialization: use different instructions for RV32 vs RV64
-    # RV32D has 64-bit FP registers but 32-bit integer registers, so use fmv.w.x
+    # RV32D has 64-bit FP registers but 32-bit integer registers
+    # Use fcvt.d.w for RV32 to get proper full-width zero (converts int to double)
     # RV64 has 64-bit integer and FP registers, so use fmv.d.x
     if is_rv32:
-        fp_move = 'fmv.w.x'  # Move 32-bit integer to lower 32 bits of FP register
+        fp_move = 'fcvt.d.w'  # Convert 32-bit integer to 64-bit double (full-width init)
     else:
         fp_move = 'fmv.d.x'  # Move 64-bit integer to FP register
 
     # Generate register store instructions
+    # CRITICAL: The template saves x30 to t6 before loading t5 with dump pointer
+    # So t6 contains x30's original value when we reach xreg_store_code
+
     if is_rv32:
         # For RV32: use pairs of 32-bit stores to fill 8-byte aligned slots
-        # Each 8-byte slot gets two 32-bit values stored consecutively
         xreg_stores = []
         for i in range(32):
             offset = i * 8
-            # Store lower 32 bits, then upper 32 bits (which is 0 for our use case)
-            xreg_stores.append(f'    sw x{i},{offset}(t5)')
-            xreg_stores.append(f'    sw x0,{offset+4}(t5)')  # Zero upper half
+            if i == 30:
+                # x30: use saved value from t6
+                xreg_stores.append(f'    sw t6,{offset}(t5)')
+                xreg_stores.append(f'    sw x0,{offset+4}(t5)')  # Zero upper half
+            else:
+                # Store lower 32 bits, then upper 32 bits (which is 0 for our use case)
+                xreg_stores.append(f'    sw x{i},{offset}(t5)')
+                xreg_stores.append(f'    sw x0,{offset+4}(t5)')  # Zero upper half
 
         freg_stores = []
         for i in range(32):
@@ -181,13 +189,17 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
         for i, csr_name in enumerate(csr_names):
             offset = i * 8
             csr_stores.append(f'    csrr t6, {csr_name}; sw t6,{offset}(t5)')
-            csr_stores.append(f'    sw t0,{offset+4}(t5)')  # Zero upper half
+            csr_stores.append(f'    sw x0,{offset+4}(t5)')  # Zero upper half
     else:
         # For RV64: use single 64-bit stores
         xreg_stores = []
         for i in range(32):
             offset = i * 8
-            xreg_stores.append(f'    sd x{i},{offset}(t5)')
+            if i == 30:
+                # x30: use saved value from t6
+                xreg_stores.append(f'    sd t6,{offset}(t5)')
+            else:
+                xreg_stores.append(f'    sd x{i},{offset}(t5)')
 
         freg_stores = []
         for i in range(32):
@@ -290,8 +302,10 @@ _start:
 
 .align 4
 trap_handler:
-    # Dump all general-purpose registers to signature region
-    la t5, reg_x0_output
+    # CRITICAL: Save x30 (t5) before using it as base pointer for register dump
+    # x30's value will be restored and stored separately
+    mv t6, t5              # Save x30's current value to t6
+    la t5, reg_x0_output   # Load dump pointer base address
 {xreg_store_code}
 
     # Dump FP registers
