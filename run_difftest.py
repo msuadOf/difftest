@@ -17,10 +17,17 @@ import os
 import sys
 import tempfile
 
-from elf_utils import get_symbols, has_signature_symbols
+from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width
 from elf_wrapper import wrap_elf_for_difftest
 from spike_runner import run_spike, find_spike
-from signature_compare import SignatureComparer
+
+# Import signature_checker from DifuzzRTL
+import sys
+fuzzer_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'difuzz-rtl', 'Fuzzer')
+src_path = os.path.join(fuzzer_path, 'src')
+sys.path.insert(0, src_path)
+sys.path.insert(0, fuzzer_path)
+from signature_checker import sigChecker
 
 
 def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=False, timeout=30):
@@ -59,8 +66,27 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
     basename = os.path.splitext(os.path.basename(elf_path))[0]
 
     # Check if ELF already has signature symbols
+    is_bin_file = elf_path.lower().endswith('.bin')
+
+    if is_bin_file:
+        # For .bin files, we need different handling
+        # Raw binaries don't have symbol tables, so we can't use the wrapper approach
+        result['status'] = 'ERROR'
+        result['details'] = (
+            f'Raw .bin files are not currently supported. '
+            f'The difftest tool requires ELF files with symbol tables for the wrapper approach. '
+            f'For .bin files, consider converting them to ELF format first.'
+        )
+        return result
+
     try:
+        # First verify it's a RISC-V ELF
+        isa_width = get_elf_isa_width(elf_path)
         symbols = get_symbols(elf_path)
+    except ValueError as e:
+        result['status'] = 'ERROR'
+        result['details'] = f'Not a valid RISC-V ELF file: {e}'
+        return result
     except Exception as e:
         result['details'] = f'Failed to read symbols: {e}'
         return result
@@ -86,13 +112,22 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
             result['details'] = f'Failed to wrap ELF: {e}'
             return result
 
+    # Map ISA width to Spike ISA string (isa_width was detected earlier)
+    if isa_width == 'rv32':
+        spike_isa = 'RV32IMAFDC'
+    else:
+        spike_isa = 'RV64IMAFDC'
+
+    if debug:
+        print(f'[Difftest] Detected ISA: {isa_width}, using Spike ISA: {spike_isa}')
+
     # Run Spike on the wrapped ELF
     isa_sig_path = os.path.join(output_dir, basename + '_isa_sig.txt')
     try:
         spike_rc, isa_sig = run_spike(
             wrapped_elf,
             sig_file=isa_sig_path,
-            isa='RV64IMAFDC',
+            isa=spike_isa,
             timeout=timeout,
             debug=debug
         )
@@ -113,34 +148,37 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         result['details'] = 'Spike did not produce a signature file'
         return result
 
-    # Perform signature comparison if RTL signature provided or symbols exist
-    try:
-        comparer = SignatureComparer(wrapped_symbols, debug=debug)
-        comparison = comparer.compare(isa_sig, rtl_sig_file)
-        result['comparison'] = comparison
+    # Perform signature comparison
+    # Note: RTL signature file is required for comparison
+    if rtl_sig_file is None:
+        result['status'] = 'SPIKE_OK'
+        result['details'] = (
+            f'Spike execution successful. '
+            f'Signature: {isa_sig} ({os.path.getsize(isa_sig)} bytes). '
+            f'RTL signature file required for comparison (--rtl-sig option).'
+        )
+        return result
 
-        if comparison['match']:
+    # Check if RTL signature file exists
+    if not os.path.isfile(rtl_sig_file):
+        result['status'] = 'ERROR'
+        result['details'] = f'RTL signature file not found: {rtl_sig_file}'
+        return result
+
+    # Use DifuzzRTL's signature checker
+    try:
+        checker = sigChecker(isa_sig, rtl_sig_file, debug=debug, minimizing=False)
+        match = checker.check(wrapped_symbols)
+
+        if match:
             result['status'] = 'PASS'
-            result['details'] = f'All signatures match'
-        elif comparison['isa_only']:
-            result['status'] = 'SPIKE_OK'
-            result['details'] = (
-                f'Spike execution successful. '
-                f'Signature: {isa_sig} ({os.path.getsize(isa_sig)} bytes). '
-                f'RTL comparison requires cocotb/Verilator environment or pre-generated RTL signature.'
-            )
+            result['details'] = 'All signatures match (ISA and RTL)'
         else:
             result['status'] = 'MISMATCH'
-            mismatch_count = (
-                comparison['xreg_mismatches'] +
-                comparison['freg_mismatches'] +
-                comparison['csr_mismatches']
-            )
-            result['details'] = f'{mismatch_count} register(s) mismatched'
-
+            result['details'] = 'Signature mismatch detected between ISA and RTL'
     except Exception as e:
-        result['status'] = 'SPIKE_OK'
-        result['details'] = f'Spike OK but comparison failed: {e}'
+        result['status'] = 'ERROR'
+        result['details'] = f'Signature comparison failed: {e}'
 
     return result
 
@@ -218,9 +256,6 @@ def main():
             print(f'[{basename}] PASS')
         elif status == 'MISMATCH':
             print(f'[{basename}] MISMATCH: {result["details"]}')
-            if result['comparison'] and args.debug:
-                comparer = SignatureComparer({}, debug=False)
-                comparer.print_report(result['comparison'])
         elif status == 'SPIKE_OK':
             print(f'[{basename}] SPIKE_OK: {result["details"]}')
         else:

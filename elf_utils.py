@@ -196,3 +196,56 @@ def get_elf_end_addr(symbols, memory):
         return max(memory.keys()) + 8
 
     return symbols.get('_start', DRAM_BASE) + 0x1000
+
+
+def get_elf_isa_width(elf_path):
+    """
+    Detect the ISA width (32 or 64 bits) from an ELF file.
+
+    Returns:
+        'rv32' for 32-bit RISC-V ELF
+        'rv64' for 64-bit RISC-V ELF
+        None if cannot determine
+
+    Raises:
+        ValueError: If the file is not a valid ELF or not RISC-V architecture
+    """
+    if not os.path.isfile(elf_path):
+        raise FileNotFoundError(f"ELF file not found: {elf_path}")
+
+    # Use readelf to get ELF header information
+    result = subprocess.run(
+        ['riscv64-unknown-elf-readelf', '-h', elf_path],
+        capture_output=True, text=True
+    )
+
+    # Fallback to system readelf
+    if result.returncode != 0:
+        result = subprocess.run(
+            ['readelf', '-h', elf_path],
+            capture_output=True, text=True
+        )
+
+    if result.returncode != 0:
+        raise ValueError(f"Failed to read ELF header: {elf_path}")
+
+    # Check for RISC-V architecture
+    if 'RISC-V' not in result.stdout:
+        raise ValueError(f"Not a RISC-V ELF file: {elf_path}")
+
+    # Determine if 32-bit or 64-bit from the ELF class
+    for line in result.stdout.split('\n'):
+        if 'Class:' in line:
+            if 'ELF32' in line:
+                return 'rv32'
+            elif 'ELF64' in line:
+                return 'rv64'
+
+    # Fallback: check machine field
+    for line in result.stdout.split('\n'):
+        if 'Machine:' in line:
+            if 'RISC-V' in line:
+                # Default to 32-bit if can't determine
+                return 'rv32'
+
+    return None

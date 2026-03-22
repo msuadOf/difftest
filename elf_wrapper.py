@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import struct
 
-from elf_utils import get_symbols, elf_to_memory_dict, DRAM_BASE
+from elf_utils import get_symbols, elf_to_memory_dict, DRAM_BASE, get_elf_isa_width
 
 
 # Path to the DifuzzRTL template includes
@@ -57,10 +57,22 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
     3. Executes the user's instructions
     4. Triggers ecall to dump state
     5. Writes to tohost to terminate
+
+    Note: For RV32 binaries, uses 32-bit stores; for RV64, uses 64-bit stores.
     """
     if output_asm_path is None:
         base = os.path.splitext(elf_path)[0]
         output_asm_path = base + '.wrapper.S'
+
+    # Detect ISA width
+    isa_width = 'rv64'  # default
+    try:
+        isa_width = get_elf_isa_width(elf_path)
+    except Exception as e:
+        # If detection fails, use default
+        pass
+
+    is_rv32 = (isa_width == 'rv32')
 
     # Read the user's binary to extract instruction bytes
     memory = elf_to_memory_dict(elf_path)
@@ -72,8 +84,8 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
     # Collect raw bytes
     raw_bytes = bytearray()
     for addr in range(start, end):
-        offset = addr - start
-        word_addr = (addr // 8) * 8 + start
+        # Calculate the 8-byte aligned address for this byte
+        word_addr = addr & ~0x7  # Clear lowest 3 bits to align to 8 bytes
         if word_addr in memory:
             word = memory[word_addr]
             byte_offset = addr - word_addr
@@ -92,9 +104,85 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
 
     user_code = '\n'.join(word_directives)
 
+    # Choose store instructions based on ISA width
+    if is_rv32:
+        xreg_store = 'sw'   # 32-bit store for RV32
+        freg_store = 'fsw'  # 32-bit FP store for RV32 (RV32 only has 32-bit FP regs)
+        csr_store = 'sw'    # 32-bit store for CSRs
+        reg_size = 4        # 4 bytes per register
+        fp_move = 'fmv.w.x' # FP move instruction for RV32
+    else:
+        xreg_store = 'sd'   # 64-bit store for RV64
+        freg_store = 'fsd'  # 64-bit FP store for RV64
+        csr_store = 'sd'    # 64-bit store for CSRs
+        reg_size = 8        # 8 bytes per register
+        fp_move = 'fmv.d.x' # FP move instruction for RV64
+
+    # Generate register store instructions
+    xreg_stores = []
+    for i in range(32):
+        offset = i * reg_size
+        xreg_stores.append(f'    {xreg_store} x{i},{offset}(t5)')
+
+    freg_stores = []
+    for i in range(32):
+        offset = i * reg_size
+        freg_stores.append(f'    {freg_store} f{i},{offset}(t5)')
+
+    csr_stores = []
+    csr_names = ['fflags', 'frm', 'fcsr', 'sstatus', 'sie', 'sscratch', 'sepc',
+                 'scause', 'stval', 'sip', 'satp', 'mhartid', 'mstatus',
+                 'medeleg', 'mie', 'mscratch', 'mepc', 'mcause', 'mtval', 'mip',
+                 'pmpcfg0', 'pmpaddr0', 'pmpaddr1', 'pmpaddr2', 'pmpaddr3',
+                 'pmpaddr4', 'pmpaddr5', 'pmpaddr6', 'pmpaddr7']
+    for i, csr_name in enumerate(csr_names):
+        offset = i * reg_size
+        csr_stores.append(f'    csrr t6, {csr_name}; {csr_store} t6,{offset}(t5)')
+
+    # Generate FP register initialization instructions
+    fp_init = []
+    for i in range(32):
+        fp_init.append(f'    {fp_move} f{i}, t0')
+
+    xreg_store_code = '\n'.join(xreg_stores)
+    freg_store_code = '\n'.join(freg_stores)
+    csr_store_code = '\n'.join(csr_stores)
+    fp_init_code = '\n'.join(fp_init)
+
+    # Generate data section directives
+    data_directive = '.word' if is_rv32 else '.dword'
+    align_directive = '.align 2' if is_rv32 else '.align 3'  # 4-byte or 8-byte align
+
+    # Generate xreg output data
+    xreg_data = []
+    xreg_data.append(f'{align_directive}')
+    xreg_data.append('xreg_output_data:')
+    for i in range(32):
+        xreg_data.append(f'.global reg_x{i}_output')
+        xreg_data.append(f'reg_x{i}_output:  {data_directive} 0')
+
+    # Generate freg output data
+    freg_data = []
+    freg_data.append(f'{align_directive}')
+    freg_data.append('freg_output_data:')
+    for i in range(32):
+        freg_data.append(f'reg_f{i}_output:  {data_directive} 0')
+
+    # Generate CSR output data
+    csr_data = []
+    csr_data.append(f'{align_directive}')
+    csr_data.append('csr_output_data:')
+    for csr_name in csr_names:
+        csr_data.append(f'{csr_name}_output:  {data_directive} 0')
+
+    xreg_data_code = '\n'.join(xreg_data)
+    freg_data_code = '\n'.join(freg_data)
+    csr_data_code = '\n'.join(csr_data)
+
     # Generate the wrapper assembly
     asm = f"""# Auto-generated wrapper for difftest
 # Source: {os.path.basename(elf_path)}
+# ISA Width: {isa_width}
 
 .section .text.init
 .align 6
@@ -138,83 +226,15 @@ _start:
 trap_handler:
     # Dump all general-purpose registers to signature region
     la t5, reg_x0_output
-    sd x0,   0(t5)
-    sd x1,   8(t5)
-    sd x2,  16(t5)
-    sd x3,  24(t5)
-    sd x4,  32(t5)
-    sd x5,  40(t5)
-    sd x6,  48(t5)
-    sd x7,  56(t5)
-    sd x8,  64(t5)
-    sd x9,  72(t5)
-    sd x10, 80(t5)
-    sd x11, 88(t5)
-    sd x12, 96(t5)
-    sd x13,104(t5)
-    sd x14,112(t5)
-    sd x15,120(t5)
-    sd x16,128(t5)
-    sd x17,136(t5)
-    sd x18,144(t5)
-    sd x19,152(t5)
-    sd x20,160(t5)
-    sd x21,168(t5)
-    sd x22,176(t5)
-    sd x23,184(t5)
-    sd x24,192(t5)
-    sd x25,200(t5)
-    sd x26,208(t5)
-    sd x27,216(t5)
-    sd x28,224(t5)
-    sd x29,232(t5)
-    sd x30,240(t5)
-    sd x31,248(t5)
+{xreg_store_code}
 
     # Dump FP registers
     la t5, reg_f0_output
-    fsd f0,   0(t5)
-    fsd f1,   8(t5)
-    fsd f2,  16(t5)
-    fsd f3,  24(t5)
-    fsd f4,  32(t5)
-    fsd f5,  40(t5)
-    fsd f6,  48(t5)
-    fsd f7,  56(t5)
-    fsd f8,  64(t5)
-    fsd f9,  72(t5)
-    fsd f10, 80(t5)
-    fsd f11, 88(t5)
-    fsd f12, 96(t5)
-    fsd f13,104(t5)
-    fsd f14,112(t5)
-    fsd f15,120(t5)
-    fsd f16,128(t5)
-    fsd f17,136(t5)
-    fsd f18,144(t5)
-    fsd f19,152(t5)
-    fsd f20,160(t5)
-    fsd f21,168(t5)
-    fsd f22,176(t5)
-    fsd f23,184(t5)
-    fsd f24,192(t5)
-    fsd f25,200(t5)
-    fsd f26,208(t5)
-    fsd f27,216(t5)
-    fsd f28,224(t5)
-    fsd f29,232(t5)
-    fsd f30,240(t5)
-    fsd f31,248(t5)
+{freg_store_code}
 
     # Dump key CSRs
     la t5, fflags_output
-    csrr t6, fflags;   sd t6, 0(t5)
-    csrr t6, frm;      sd t6, 8(t5)
-    csrr t6, fcsr;     sd t6, 16(t5)
-    csrr t6, mstatus;  sd t6, 24(t5)
-    csrr t6, mepc;     sd t6, 32(t5)
-    csrr t6, mcause;   sd t6, 40(t5)
-    csrr t6, mtval;    sd t6, 48(t5)
+{csr_store_code}
 
     # Write to tohost to signal completion
 write_tohost:
@@ -242,38 +262,7 @@ reset_vector:
 
     # Initialize all FP registers to 0
     li t0, 0
-    fmv.d.x f0, t0
-    fmv.d.x f1, t0
-    fmv.d.x f2, t0
-    fmv.d.x f3, t0
-    fmv.d.x f4, t0
-    fmv.d.x f5, t0
-    fmv.d.x f6, t0
-    fmv.d.x f7, t0
-    fmv.d.x f8, t0
-    fmv.d.x f9, t0
-    fmv.d.x f10, t0
-    fmv.d.x f11, t0
-    fmv.d.x f12, t0
-    fmv.d.x f13, t0
-    fmv.d.x f14, t0
-    fmv.d.x f15, t0
-    fmv.d.x f16, t0
-    fmv.d.x f17, t0
-    fmv.d.x f18, t0
-    fmv.d.x f19, t0
-    fmv.d.x f20, t0
-    fmv.d.x f21, t0
-    fmv.d.x f22, t0
-    fmv.d.x f23, t0
-    fmv.d.x f24, t0
-    fmv.d.x f25, t0
-    fmv.d.x f26, t0
-    fmv.d.x f27, t0
-    fmv.d.x f28, t0
-    fmv.d.x f29, t0
-    fmv.d.x f30, t0
-    fmv.d.x f31, t0
+{fp_init_code}
 
     # Re-initialize x registers
     li x1, 0
@@ -343,108 +332,11 @@ fromhost: .dword 0
 .global begin_signature
 begin_signature:
 
-.align 8
-xreg_output_data:
-.global reg_x0_output
-reg_x0_output:  .dword 0
-reg_x1_output:  .dword 0
-reg_x2_output:  .dword 0
-reg_x3_output:  .dword 0
-reg_x4_output:  .dword 0
-reg_x5_output:  .dword 0
-reg_x6_output:  .dword 0
-reg_x7_output:  .dword 0
-reg_x8_output:  .dword 0
-reg_x9_output:  .dword 0
-reg_x10_output: .dword 0
-reg_x11_output: .dword 0
-reg_x12_output: .dword 0
-reg_x13_output: .dword 0
-reg_x14_output: .dword 0
-reg_x15_output: .dword 0
-reg_x16_output: .dword 0
-reg_x17_output: .dword 0
-reg_x18_output: .dword 0
-reg_x19_output: .dword 0
-reg_x20_output: .dword 0
-reg_x21_output: .dword 0
-reg_x22_output: .dword 0
-reg_x23_output: .dword 0
-reg_x24_output: .dword 0
-reg_x25_output: .dword 0
-reg_x26_output: .dword 0
-reg_x27_output: .dword 0
-reg_x28_output: .dword 0
-reg_x29_output: .dword 0
-reg_x30_output: .dword 0
-reg_x31_output: .dword 0
+{xreg_data_code}
 
-.align 8
-freg_output_data:
-reg_f0_output:  .dword 0
-reg_f1_output:  .dword 0
-reg_f2_output:  .dword 0
-reg_f3_output:  .dword 0
-reg_f4_output:  .dword 0
-reg_f5_output:  .dword 0
-reg_f6_output:  .dword 0
-reg_f7_output:  .dword 0
-reg_f8_output:  .dword 0
-reg_f9_output:  .dword 0
-reg_f10_output: .dword 0
-reg_f11_output: .dword 0
-reg_f12_output: .dword 0
-reg_f13_output: .dword 0
-reg_f14_output: .dword 0
-reg_f15_output: .dword 0
-reg_f16_output: .dword 0
-reg_f17_output: .dword 0
-reg_f18_output: .dword 0
-reg_f19_output: .dword 0
-reg_f20_output: .dword 0
-reg_f21_output: .dword 0
-reg_f22_output: .dword 0
-reg_f23_output: .dword 0
-reg_f24_output: .dword 0
-reg_f25_output: .dword 0
-reg_f26_output: .dword 0
-reg_f27_output: .dword 0
-reg_f28_output: .dword 0
-reg_f29_output: .dword 0
-reg_f30_output: .dword 0
-reg_f31_output: .dword 0
+{freg_data_code}
 
-.align 8
-csr_output_data:
-fflags_output:  .dword 0
-frm_output:     .dword 0
-fcsr_output:    .dword 0
-sstatus_output: .dword 0
-sie_output:     .dword 0
-sscratch_output:.dword 0
-sepc_output:    .dword 0
-scause_output:  .dword 0
-stval_output:   .dword 0
-sip_output:     .dword 0
-satp_output:    .dword 0
-mhartid_output: .dword 0
-mstatus_output: .dword 0
-medeleg_output: .dword 0
-mie_output:     .dword 0
-mscratch_output:.dword 0
-mepc_output:    .dword 0
-mcause_output:  .dword 0
-mtval_output:   .dword 0
-mip_output:     .dword 0
-pmpcfg0_output: .dword 0
-pmpaddr0_output:.dword 0
-pmpaddr1_output:.dword 0
-pmpaddr2_output:.dword 0
-pmpaddr3_output:.dword 0
-pmpaddr4_output:.dword 0
-pmpaddr5_output:.dword 0
-pmpaddr6_output:.dword 0
-pmpaddr7_output:.dword 0
+{csr_data_code}
 
 .align 4
 .global end_signature
@@ -494,10 +386,16 @@ _end_data5:
     return output_asm_path
 
 
-def compile_wrapper(asm_path, output_elf_path=None, output_hex_path=None):
+def compile_wrapper(asm_path, original_elf_path=None, output_elf_path=None, output_hex_path=None):
     """
     Compile the wrapper assembly into an ELF and hex file.
-    Uses rv64g to match the DifuzzRTL Rocket/Boom target.
+    Detects ISA width from original ELF to use correct compiler flags.
+
+    Args:
+        asm_path: Path to the wrapper assembly file
+        original_elf_path: Path to the original ELF (for ISA detection)
+        output_elf_path: Path for output ELF
+        output_hex_path: Path for output hex file
     """
     if output_elf_path is None:
         output_elf_path = os.path.splitext(asm_path)[0] + '.elf'
@@ -506,10 +404,27 @@ def compile_wrapper(asm_path, output_elf_path=None, output_hex_path=None):
 
     link_ld = os.path.join(TEMPLATE_DIR, 'include', 'link.ld')
 
+    # Detect ISA width from original ELF
+    isa_width = 'rv64'  # default
+    if original_elf_path:
+        try:
+            isa_width = get_elf_isa_width(original_elf_path)
+        except Exception as e:
+            # If detection fails, use default
+            pass
+
+    # Select compiler flags based on ISA width
+    if isa_width == 'rv32':
+        march = '-march=rv32g'
+        mabi = '-mabi=ilp32'
+    else:
+        march = '-march=rv64g'
+        mabi = '-mabi=lp64'
+
     cc = 'riscv64-unknown-elf-gcc'
     cc_args = [
         cc,
-        '-march=rv64g', '-mabi=lp64',
+        march, mabi,
         '-static', '-mcmodel=medany',
         '-fvisibility=hidden',
         '-nostdlib', '-nostartfiles',
@@ -562,7 +477,7 @@ def wrap_elf_for_difftest(elf_path, output_dir=None):
     generate_wrapper_asm(elf_path, asm_path)
 
     # Compile
-    compile_wrapper(asm_path, wrapped_elf, wrapped_hex)
+    compile_wrapper(asm_path, elf_path, wrapped_elf, wrapped_hex)
 
     # Extract symbols from wrapped ELF
     symbols = get_symbols(wrapped_elf)
