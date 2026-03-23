@@ -664,14 +664,14 @@ class tlAdapter():
                     if callback:
                         callback.call()
 
-                    d_ports.opcode <= msg.opcode
-                    d_ports.param <= msg.param
-                    d_ports.size <= msg.size
-                    d_ports.source <= msg.source
-                    d_ports.sink <= msg.sink
-                    d_ports.data <= msg.data
-                    d_ports.corrupt <= msg.corrupt
-                    d_ports.denied <= msg.denied
+                    d_ports.opcode.value = msg.opcode
+                    d_ports.param.value = msg.param
+                    d_ports.size.value = msg.size
+                    d_ports.source.value = msg.source
+                    d_ports.sink.value = msg.sink
+                    d_ports.data.value = msg.data
+                    d_ports.corrupt.value = msg.corrupt
+                    d_ports.denied.value = msg.denied
 
                     d_ports.valid.value = 1
                     await clkedge
@@ -698,13 +698,13 @@ class tlAdapter():
             if not self.b_queue.empty():
                 msg = self.b_queue.pop()
                 if msg:
-                    b_ports.opcode <= msg.opcode
-                    b_ports.param <= msg.param
-                    b_ports.size <= msg.size
-                    b_ports.source <= msg.source
-                    b_ports.address <= msg.address
-                    b_ports.mask <= msg.mask
-                    b_ports.data <= msg.data
+                    b_ports.opcode.value = msg.opcode
+                    b_ports.param.value = msg.param
+                    b_ports.size.value = msg.size
+                    b_ports.source.value = msg.source
+                    b_ports.address.value = msg.address
+                    b_ports.mask.value = msg.mask
+                    b_ports.data.value = msg.data
 
                     b_ports.valid.value = 1
                     await clkedge

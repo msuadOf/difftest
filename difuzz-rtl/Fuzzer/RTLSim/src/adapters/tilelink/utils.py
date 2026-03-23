@@ -41,15 +41,33 @@ class Ports:
             setattr(self, attr + '_mask', attr_mask)
 
     def get(self, attr):
-        return getattr(self, attr).value & getattr(self, attr + '_mask')
+        # cocotb 2.0: .value returns LogicArray, need to convert to int
+        val = getattr(self, attr).value
+        mask = getattr(self, attr + '_mask')
+        # Handle both LogicArray and int values
+        if hasattr(val, 'to_unsigned'):
+            return val.to_unsigned() & mask
+        else:
+            return int(val) & mask
 
     def fire(self):
-        return self.ready.value & self.valid.value
+        # cocotb 2.0: .value returns LogicArray, need to convert to int
+        ready_val = self.ready.value
+        valid_val = self.valid.value
+        if hasattr(ready_val, 'to_unsigned'):
+            ready_val = ready_val.to_unsigned()
+        else:
+            ready_val = int(ready_val)
+        if hasattr(valid_val, 'to_unsigned'):
+            valid_val = valid_val.to_unsigned()
+        else:
+            valid_val = int(valid_val)
+        return ready_val & valid_val
 
     def clear(self):
         for field in self.bit_fields:
             port = getattr(self, field)
-            port <= 0
+            port.value = 0
 
 
 """ CallBack functions which tilelink adapter should run """

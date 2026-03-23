@@ -123,7 +123,12 @@ class rvRTLhost():
 
     def get_covsum(self):
         cov_mask = (1 << len(self.dut.io_covSum)) - 1
-        return self.dut.io_covSum.value & cov_mask
+        # cocotb 2.0: .value returns LogicArray, need to convert to int
+        val = self.dut.io_covSum.value
+        if hasattr(val, 'to_unsigned'):
+            return val.to_unsigned() & cov_mask
+        else:
+            return int(val) & cov_mask
 
     async def run_test(self, rtl_input: rtlInput, assert_intr: bool):
 

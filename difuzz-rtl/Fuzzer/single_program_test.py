@@ -94,17 +94,36 @@ async def test(dut):
     # Get rtlInput from environment
     rtl_input = get_rtl_input_from_env()
 
+    # Get result file path early - we need it for error reporting
+    rtl_result_file = os.environ.get('RTL_RESULT_FILE')
+
+    def write_error_result(result_code):
+        """Helper function to write error result to file."""
+        if rtl_result_file:
+            try:
+                with open(rtl_result_file, 'w') as f:
+                    f.write(str(result_code))
+            except:
+                pass
+
     if rtl_input is None:
         print("ERROR: No RTL input configuration found")
         print("Set RTL_CONFIG_FILE environment variable with JSON config")
         print("Or set RTL_HEX_FILE, RTL_SIG_FILE, and RTL_SYMBOLS environment variables")
-        exit(ASSERTION_FAIL)
+        write_error_result(ASSERTION_FAIL)
+        return  # Exit the test gracefully
 
     # Get output path
     rtl_sig_path = os.environ.get('RTL_SIG_FILE')
     if not rtl_sig_path:
         print("ERROR: RTL_SIG_FILE environment variable not set")
-        exit(ASSERTION_FAIL)
+        write_error_result(ASSERTION_FAIL)
+        return  # Exit the test gracefully
+
+    if not rtl_result_file:
+        print("ERROR: RTL_RESULT_FILE environment variable not set")
+        # Can't write result file if path not set
+        return  # Exit the test gracefully
 
     # Get debug flag
     debug = os.environ.get('RTL_DEBUG', '0') == '1'
@@ -124,14 +143,25 @@ async def test(dut):
         # Run the simulation
         result, _ = await host.run_test(rtl_input, assert_intr=False)
 
-        # Exit with the result code
-        if debug:
-            print(f"RTL simulation completed with result: {result}")
+        # Write result to status file for rtl_runner.py to read
+        try:
+            with open(rtl_result_file, 'w') as f:
+                f.write(str(result))
+            if debug:
+                print(f"RTL simulation completed with result: {result}")
+                print(f"Result written to: {rtl_result_file}")
+        except Exception as e:
+            if debug:
+                print(f"ERROR writing result file: {e}")
 
-        exit(result)
+        # Exit successfully (cocotb 2.0 treats SystemExit as failure)
+        # The result is now communicated via the status file
 
     except Exception as e:
         print(f"ERROR during RTL simulation: {e}")
         import traceback
         traceback.print_exc()
-        exit(ASSERTION_FAIL)
+        # Write error status to file
+        write_error_result(ASSERTION_FAIL)
+        # Let cocotb handle the exception naturally
+        raise

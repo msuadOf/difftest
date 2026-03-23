@@ -86,6 +86,9 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
         # Strip _state suffix if present to match info file name
         if env['TOPLEVEL'].endswith('_state'):
             env['TOPLEVEL'] = env['TOPLEVEL'][:-6]  # Remove '_state' (6 characters)
+        # Create result file for communicating RTL result back from test
+        env['RTL_RESULT_FILE'] = os.path.abspath(os.path.join(
+            os.path.dirname(rtl_sig_path), 'rtl_result.txt'))
 
         # Build the make command to run the single program test
         make_cmd = [
@@ -119,20 +122,38 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
             if result.stderr:
                 print(f'[RTL Runner] STDERR: {result.stderr[-1000:]}')
 
-        # Check if the RTL signature file was created
-        if not os.path.isfile(rtl_sig_path):
-            # Simulation failed to produce signature
-            # Make/build failures should be ASSERTION_FAIL, not TIME_OUT
-            # Only subprocess.TimeoutExpired should return TIME_OUT
-            if result.returncode == 0:
-                # Make succeeded but no signature file - this is unexpected
-                return (ASSERTION_FAIL, {'make_exit_code': 0, 'stderr_tail': 'No signature file produced'})
-            # Make failed with non-zero exit code
-            return (ASSERTION_FAIL, {'make_exit_code': result.returncode, 'stderr_tail': result.stderr[-500:] if result.stderr else ''})
+        # Read the actual RTL simulation result from RTL_RESULT_FILE
+        # The test writes its result code to this file
+        rtl_result_path = env.get('RTL_RESULT_FILE')
+        actual_result = ASSERTION_FAIL  # Default to assertion fail if we can't determine result
 
-        # Return the actual result code from the simulation
-        # The test exits with the result code, so returncode is the simulation result
-        return (result.returncode, {'make_exit_code': result.returncode})
+        if os.path.isfile(rtl_result_path):
+            try:
+                with open(rtl_result_path, 'r') as f:
+                    result_str = f.read().strip()
+                    actual_result = int(result_str)
+                if debug:
+                    print(f'[RTL Runner] Read result from file: {actual_result}')
+            except Exception as e:
+                if debug:
+                    print(f'[RTL Runner] Error reading result file: {e}')
+                actual_result = ASSERTION_FAIL
+        else:
+            if debug:
+                print(f'[RTL Runner] Result file not found: {rtl_result_path}')
+            # Result file doesn't exist - check if signature was created
+            if not os.path.isfile(rtl_sig_path):
+                # No signature file and no result file - simulation failed early
+                return (ASSERTION_FAIL, {
+                    'make_exit_code': result.returncode,
+                    'stderr_tail': result.stderr[-500:] if result.stderr else 'No signature or result file'
+                })
+
+        # Return the actual simulation result code from the result file
+        return (actual_result, {
+            'make_exit_code': result.returncode,
+            'rtl_result': actual_result
+        })
 
     except subprocess.TimeoutExpired:
         return (TIME_OUT, {'make_exit_code': None, 'stderr_tail': 'Timeout'})
