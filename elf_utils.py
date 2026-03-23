@@ -562,9 +562,10 @@ def get_data_sections_info(elf_path):
         stripped = line.strip()
         if not stripped:
             continue
-        # Check if this is a continuation line (starts with spaces/whitespace but no '[')
+        # Check if this is a continuation line (starts with whitespace but no '[')
+        # IMPORTANT: Use original line to check for leading whitespace, not stripped
         # Continuation lines contain Addr, Off, Size, ES, Flg, Lk, Inf, Al values
-        if stripped[0].isspace() and '[' not in stripped and merged_lines:
+        if line and line[0].isspace() and '[' not in stripped and merged_lines:
             # Append to previous line
             merged_lines[-1] = merged_lines[-1] + ' ' + stripped
         else:
@@ -661,8 +662,9 @@ def get_bss_sections_info(elf_path):
         stripped = line.strip()
         if not stripped:
             continue
-        # Check if this is a continuation line (starts with spaces/whitespace but no '[')
-        if stripped[0].isspace() and '[' not in stripped and merged_lines:
+        # Check if this is a continuation line (starts with whitespace but no '[')
+        # IMPORTANT: Use original line to check for leading whitespace, not stripped
+        if line and line[0].isspace() and '[' not in stripped and merged_lines:
             # Append to previous line
             merged_lines[-1] = merged_lines[-1] + ' ' + stripped
         else:
@@ -936,7 +938,8 @@ _start:
 
 .global _end_main
 _end_main:
-    unimp
+    # No sentinel instruction here - _end_main points to the end of binary data
+    # Adding 'unimp' would inject an executable instruction into user_code
 
 .global __bss_start
 __bss_start:
