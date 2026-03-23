@@ -1,11 +1,31 @@
 import time
 import random
 
-from cocotb.decorators import coroutine
+# Compatibility layer for different cocotb versions
+try:
+    from cocotb.decorators import coroutine
+    HAS_OLD_COROUTINE = True
+except ImportError:
+    # cocotb 2.0+ removed @coroutine decorator
+    # Define a no-op decorator for async functions
+    def coroutine(func):
+        """No-op decorator for modern cocotb async functions."""
+        return func
+    HAS_OLD_COROUTINE = False
 from RTLSim.host import ILL_MEM, SUCCESS, TIME_OUT, ASSERTION_FAIL
 
 from src.utils import *
 from src.multicore_manager import proc_state
+
+# Compatibility for cocotb_start() vs cocotb.start_soon()
+def cocotb_start(func):
+    """Compatibility wrapper for starting coroutines across cocotb versions."""
+    try:
+        return cocotb.start_soon(func)
+    except AttributeError:
+        # cocotb < 2.0
+        return cocotb_start(func)
+
 
 
 @coroutine

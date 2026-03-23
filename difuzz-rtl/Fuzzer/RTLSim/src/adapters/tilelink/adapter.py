@@ -3,11 +3,31 @@ import cocotb
 import math
 import random
 import queue
-from cocotb.decorators import coroutine
+# Compatibility layer for different cocotb versions
+try:
+    from cocotb.decorators import coroutine
+    HAS_OLD_COROUTINE = True
+except ImportError:
+    # cocotb 2.0+ removed @coroutine decorator
+    # Define a no-op decorator for async functions
+    def coroutine(func):
+        """No-op decorator for modern cocotb async functions."""
+        return func
+    HAS_OLD_COROUTINE = False
 from cocotb.triggers import Timer, RisingEdge
 
 from adapters.tilelink.definitions import *
 from adapters.tilelink.utils import *
+
+# Compatibility for cocotb_start() vs cocotb.start_soon()
+def cocotb_start(func):
+    """Compatibility wrapper for starting coroutines across cocotb versions."""
+    try:
+        return cocotb.start_soon(func)
+    except AttributeError:
+        # cocotb < 2.0
+        return cocotb_start(func)
+
 
 """ Tilelink adapter
 , which acts as a tilelink slave 
@@ -287,27 +307,26 @@ class tlAdapter():
 
         b_callback = srcToCallback('b_callback', b_src_list)
 
-        self.a_monitor = cocotb.fork(self.a_port_monitor(memory, block_perm, d_sinks, \
+        self.a_monitor = cocotb_start(self.a_port_monitor(memory, block_perm, d_sinks, \
                                                          b_srcs, b_callback))
-        self.c_monitor = cocotb.fork(self.c_port_monitor(memory, block_perm, b_srcs, \
+        self.c_monitor = cocotb_start(self.c_port_monitor(memory, block_perm, b_srcs, \
                                                          b_callback))
-        self.e_monitor = cocotb.fork(self.e_port_monitor(memory, d_sinks))
+        self.e_monitor = cocotb_start(self.e_port_monitor(memory, d_sinks))
 
-        self.d_driver = cocotb.fork(self.d_port_driver())
-        self.b_driver = cocotb.fork(self.b_port_driver())
+        self.d_driver = cocotb_start(self.d_port_driver())
+        self.b_driver = cocotb_start(self.b_port_driver())
 
-        self.retriever = cocotb.fork(self.data_retriever(block_perm, b_srcs, b_callback))
-        self.host_if = cocotb.fork(self.host_interface(block_perm, b_srcs, b_callback))
+        self.retriever = cocotb_start(self.data_retriever(block_perm, b_srcs, b_callback))
+        self.host_if = cocotb_start(self.host_interface(block_perm, b_srcs, b_callback))
 
-    @coroutine
-    def a_port_monitor(self, memory, block_perm, d_sinks, b_srcs, b_callback):
+    async def a_port_monitor(self, memory, block_perm, d_sinks, b_srcs, b_callback):
 
         clkedge = RisingEdge(self.dut.clock)
         a_ports = self.a_ports
 
         ongoings = {} # On going TL-A transactions (src - count)
 
-        a_ports.ready <= 1
+        a_ports.ready.value = 1
         while self.drive:
             if a_ports.fire():
                 opcode = a_ports.get('opcode')
@@ -524,19 +543,18 @@ class tlAdapter():
                         self.d_queue.push('Grant', callback_d, param=d_param, size=size, \
                                           source=source, sink=d_sink)
 
-            yield clkedge
+            await clkedge
 
-        a_ports.ready <= 0
+        a_ports.ready.value = 0
 
-    @coroutine
-    def c_port_monitor(self, memory, block_perm, b_srcs, b_callback):
+    async def c_port_monitor(self, memory, block_perm, b_srcs, b_callback):
 
         clkedge = RisingEdge(self.dut.clock)
         c_ports = self.c_ports
 
         ongoings = {} # On going transactions (src - count)
 
-        c_ports.ready <= 1
+        c_ports.ready.value = 1
         while self.drive:
             if c_ports.fire():
                 opcode = c_ports.get('opcode')
@@ -611,29 +629,27 @@ class tlAdapter():
                     else:
                         ongoings[source] = count + 1
 
-            yield clkedge
+            await clkedge
 
-        c_ports.ready <= 0
+        c_ports.ready.value = 0
 
-    @coroutine
-    def e_port_monitor(self, memory, d_sinks):
+    async def e_port_monitor(self, memory, d_sinks):
 
         clkedge = RisingEdge(self.dut.clock)
         e_ports = self.e_ports
 
-        e_ports.ready <= 1
+        e_ports.ready.value = 1
         while self.drive:
             if e_ports.fire():
                 sink = e_ports.get('sink')
                 d_sinks.release(sink)
                 self.ongoing_tlc.pop(sink)
 
-            yield clkedge
+            await clkedge
 
-        e_ports.ready <= 0
+        e_ports.ready.value = 0
 
-    @coroutine
-    def d_port_driver(self):
+    async def d_port_driver(self):
 
         clkedge = RisingEdge(self.dut.clock)
         d_ports = self.d_ports
@@ -657,23 +673,22 @@ class tlAdapter():
                     d_ports.corrupt <= msg.corrupt
                     d_ports.denied <= msg.denied
 
-                    d_ports.valid <= 1
-                    yield clkedge
+                    d_ports.valid.value = 1
+                    await clkedge
                     while not d_ports.fire():
-                        yield clkedge
+                        await clkedge
 
                     d_ports.clear()
-                    d_ports.valid <= 0
+                    d_ports.valid.value = 0
 
                 else:
-                    yield clkedge
+                    await clkedge
             else:
-                yield clkedge
+                await clkedge
 
         d_ports.clear()
 
-    @coroutine
-    def b_port_driver(self):
+    async def b_port_driver(self):
 
         clkedge = RisingEdge(self.dut.clock)
         b_ports = self.b_ports
@@ -691,32 +706,30 @@ class tlAdapter():
                     b_ports.mask <= msg.mask
                     b_ports.data <= msg.data
 
-                    b_ports.valid <= 1
-                    yield clkedge
+                    b_ports.valid.value = 1
+                    await clkedge
                     while not b_ports.fire():
-                        yield clkedge
+                        await clkedge
 
                     b_ports.clear()
-                    b_ports.valid <= 0
+                    b_ports.valid.value = 0
 
                 else:
-                    yield clkedge
+                    await clkedge
             else:
-                yield clkedge
+                await clkedge
 
         b_ports.clear()
 
-    @coroutine
-    def data_retriever(self, block_perm, b_srcs, b_callback):
+    async def data_retriever(self, block_perm, b_srcs, b_callback):
         clkedge = RisingEdge(self.dut.clock)
 
         while not self.retrieve:
-            yield clkedge
+            await clkedge
 
         self.probe_blocks(block_perm, b_srcs, b_callback)
 
-    @coroutine
-    def host_interface(self, block_perm, b_srcs, b_callback):
+    async def host_interface(self, block_perm, b_srcs, b_callback):
         clkedge = RisingEdge(self.dut.clock)
 
         while self.drive:
@@ -737,7 +750,7 @@ class tlAdapter():
                     self.probe_en = 0
                     self.probe_addr = 0
 
-            yield clkedge
+            await clkedge
 
     def probe_block(self, probe_addr):
         self.probe = 1

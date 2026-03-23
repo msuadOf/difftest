@@ -109,8 +109,8 @@ async def test(dut):
     # Get debug flag
     debug = os.environ.get('RTL_DEBUG', '0') == '1'
 
-    # Get toplevel name
-    toplevel = os.environ.get('TOPLEVEL', 'E RocketTile_VHarness')
+    # Get toplevel name - must match info file name (e.g., "RocketTile" for RocketTile_info.txt)
+    toplevel = os.environ.get('TOPLEVEL', 'RocketTile')
 
     try:
         # Create RTL host

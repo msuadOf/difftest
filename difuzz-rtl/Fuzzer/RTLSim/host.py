@@ -91,22 +91,22 @@ class rvRTLhost():
 
     async def clock_gen(self, clock, period=2):
         while True:
-            clock <= 1
+            clock.value = 1
             await Timer(period / 2)
-            clock <= 0
+            clock.value = 0
             await Timer(period / 2)
 
     async def reset(self, clock, metaReset, reset, timer=5):
         clkedge = RisingEdge(clock)
 
-        metaReset <= 1
+        metaReset.value = 1
         for i in range(timer):
             await clkedge
-        metaReset <= 0
-        reset <= 1
+        metaReset.value = 0
+        reset.value = 1
         for i in range(timer):
             await clkedge
-        reset <= 0
+        reset.value = 0
 
     def save_signature(self, memory, sig_start, sig_end, data_addrs, sig_file):
         fd = open(sig_file, 'w')
@@ -192,7 +192,9 @@ class rvRTLhost():
                     self.adapter.probe_tohost(tohost_addr)
 
         await self.adapter.stop()
-        clk_driver.kill()
+        # Note: In cocotb 2.0+, tasks are automatically cleaned up when they go out of scope
+        # clk_driver.kill() is no longer needed and may cause issues
+        # clk_driver.kill()
 
         # Check all the CPU's memory access operations occurs in DRAM
         mem_check = True

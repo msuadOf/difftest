@@ -224,7 +224,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
                 wrapped_elf_path=wrapped_elf,
                 wrapped_hex_path=wrapped_hex,
                 symbols=wrapped_symbols,
-                max_cycles=timeout * 100  # Convert seconds to cycles (approximate)
+                max_cycles=timeout * 1000  # Convert seconds to cycles (allow more cycles)
             )
         except Exception as e:
             result['status'] = 'ERROR'

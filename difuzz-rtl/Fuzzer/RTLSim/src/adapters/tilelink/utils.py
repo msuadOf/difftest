@@ -30,7 +30,7 @@ class Ports:
                 setattr(self, attr, getattr(dut, fire_port[0]))
 
         for attr in fields:
-            if not getattr(self, attr):
+            if getattr(self, attr) is None:
                 raise Exception('{} has incomplete tl_{}_ports'.format(dut.name, channel))
 
         for attr in fields:

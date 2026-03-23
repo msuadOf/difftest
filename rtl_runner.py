@@ -19,7 +19,7 @@ TIME_OUT = 2
 ILL_MEM = -1
 
 
-def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
+def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
                        debug=False, timeout=120):
     """
     Run RTL simulation using cocotb and the existing DifuzzRTL infrastructure.
@@ -84,6 +84,11 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
         env['RTL_CONFIG_FILE'] = config_path
         env['RTL_SIG_FILE'] = os.path.abspath(rtl_sig_path)
         env['TOPLEVEL_LANG'] = 'verilog'
+        # Set TOPLEVEL to match info file (e.g., "RocketTile" for RocketTile_info.txt)
+        env['TOPLEVEL'] = vfile.split()[1] if " " in vfile else vfile
+        # Strip _state suffix if present to match info file name
+        if env['TOPLEVEL'].endswith('_state'):
+            env['TOPLEVEL'] = env['TOPLEVEL'][:-6]  # Remove '_state' (6 characters)
 
         # Build the make command to run the single program test
         make_cmd = [

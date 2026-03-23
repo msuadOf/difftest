@@ -4,8 +4,28 @@ import time
 import sysv_ipc as ipc
 import cocotb
 
-from cocotb.decorators import coroutine
+# Compatibility layer for different cocotb versions
+try:
+    from cocotb.decorators import coroutine
+    HAS_OLD_COROUTINE = True
+except ImportError:
+    # cocotb 2.0+ removed @coroutine decorator
+    # Define a no-op decorator for async functions
+    def coroutine(func):
+        """No-op decorator for modern cocotb async functions."""
+        return func
+    HAS_OLD_COROUTINE = False
 from cocotb.triggers import RisingEdge, Timer
+
+# Compatibility for cocotb_start() vs cocotb.start_soon()
+def cocotb_start(func):
+    """Compatibility wrapper for starting coroutines across cocotb versions."""
+    try:
+        return cocotb.start_soon(func)
+    except AttributeError:
+        # cocotb < 2.0
+        return cocotb_start(func)
+
 
 NORMAL          = 0
 ERR_COMPILE     = 1
@@ -184,37 +204,34 @@ class procManager():
         fd.close()
         self.covMap_sem.V()
 
-    @coroutine
-    def clock_gen(self, clock, period=2):
+    async def clock_gen(self, clock, period=2):
         while True:
             clock <= 1
-            yield Timer(period / 2)
+            await Timer(period / 2)
             clock <= 0
-            yield Timer(period / 2)
+            await Timer(period / 2)
 
-    @coroutine
-    def cov_restore(self, dut):
+    async def cov_restore(self, dut):
         clkedge = RisingEdge(dut.clock)
 
-        clk_driver = cocotb.fork(self.clock_gen(dut.clock))
+        clk_driver = cocotb_start(self.clock_gen(dut.clock))
 
         dut.cov_restore <= 1
-        yield clkedge
+        await clkedge
         dut.cov_restore <= 0
-        yield clkedge
+        await clkedge
 
         clk_driver.kill()
 
-    @coroutine
-    def cov_store(self, dut, proc_num):
+    async def cov_store(self, dut, proc_num):
         clkedge = RisingEdge(dut.clock)
 
-        clk_driver = cocotb.fork(self.clock_gen(dut.clock))
+        clk_driver = cocotb_start(self.clock_gen(dut.clock))
 
         dut.cov_store <= 1
         dut.proc_num <= proc_num
-        yield clkedge
+        await clkedge
         dut.cov_store <= 0
-        yield clkedge
+        await clkedge
 
         clk_driver.kill()

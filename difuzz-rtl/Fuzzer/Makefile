@@ -9,7 +9,11 @@ PYTHONPATH := $(CWD)/src:$(CWD)/RTLSim/src:$(PYTHONPATH)
 
 TOPLEVEL_LAGN ?= verilog
 
-TOPLEVEL ?= $(VFILE)
+# Default to RocketTile if VFILE not specified
+VFILE ?= RocketTile_state
+
+# Strip _state suffix to get TOPLEVEL name (e.g., RocketTile_state -> RocketTile)
+TOPLEVEL ?= $(subst _state,,$(VFILE))
 VERILOG_SOURCES = $(CWD)/../Benchmarks/Verilog/$(VFILE).v
 COCOTB_HDL_TIMEUNIT=1us
 COCOTB_HDL_TIMEPRECISION=1us
@@ -31,11 +35,8 @@ else
     PLUSARGS_OUT=
 endif
 
-ifeq ($(VFILE), RocketTile_VHarness)
-    INCLUDE=-I $(CWD)/../Benchmarks/Verilog/RocketTile_mux.v
-else
-    INCLUDE=
-endif
+# No special includes needed for current DUT configurations
+INCLUDE=
 
 PRINTF_COND ?= 0
 STOP_COND ?= 0
@@ -47,7 +48,8 @@ MODULE?=DifuzzRTL
 
 CUSTOM_SIM_DEPS=$(CWD)/Makefile
 
-include $(shell cocotb-config --makefiles)/Makefile.inc
+# Only include Makefile.sim - it will include Makefile.inc in the correct order
+# and initialize PYTHON_BIN properly for cocotb 2.0+
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 sim: $(MODULE).py

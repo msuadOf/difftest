@@ -1,8 +1,28 @@
 import sys
 import cocotb
 
-from cocotb.decorators import coroutine
+# Compatibility layer for different cocotb versions
+try:
+    from cocotb.decorators import coroutine
+    HAS_OLD_COROUTINE = True
+except ImportError:
+    # cocotb 2.0+ removed @coroutine decorator
+    # Define a no-op decorator for async functions
+    def coroutine(func):
+        """No-op decorator for modern cocotb async functions."""
+        return func
+    HAS_OLD_COROUTINE = False
+
 from cocotb.triggers import RisingEdge
+
+# Compatibility for cocotb.fork() vs cocotb.start_soon()
+def cocotb_start(func):
+    """Compatibility wrapper for starting coroutines across cocotb versions."""
+    try:
+        return cocotb.start_soon(func)
+    except AttributeError:
+        # cocotb < 2.0
+        return cocotb.fork(func)
 
 from adapters.tilelink.adapter import tlAdapter
 from adapters.tilelink.definitions import *
@@ -58,7 +78,7 @@ class tileAdapter():
         self.reset_vector_port = getattr(self.dut, reset_vector_port)
 
         self.reset_vector = 0x10000
-        self.reset_vector_port <= self.reset_vector
+        self.reset_vector_port.value = self.reset_vector
 
         self.monitor_pc = getattr(self.dut, pc_name)
         self.monitor_valid = getattr(self.dut, valid_name)
@@ -79,16 +99,15 @@ class tileAdapter():
         mtip = int((intr & INT_MTIP) == INT_MTIP)
         msip = int((intr & INT_MSIP) == INT_MSIP)
 
-        self.int_ports.seip <= seip
-        self.int_ports.meip <= meip
-        self.int_ports.msip <= msip
-        self.int_ports.mtip <= mtip
+        self.int_ports.seip.value = seip
+        self.int_ports.meip.value = meip
+        self.int_ports.msip.value = msip
+        self.int_ports.mtip.value = mtip
 
     def pc_valid(self):
         return self.monitor_valid.value
 
-    @coroutine
-    def interrupt_handler(self, ints):
+    async def interrupt_handler(self, ints):
         if not ints:
             return
 
@@ -99,7 +118,7 @@ class tileAdapter():
                     self.debug_print('[RTLHost] interrupt_handler, pc: {:016x}, INT: {:01x}'.
                                      format(pc, ints[pc]))
                     self.assert_intr(ints[pc])
-            yield RisingEdge(self.dut.clock)
+            await RisingEdge(self.dut.clock)
 
 
     def probe_tohost(self, tohost_addr):
@@ -114,20 +133,19 @@ class tileAdapter():
 
         self.drive = True
         self.tl_adapter.start(memory)
-        self.intr_handler = cocotb.fork(self.interrupt_handler(ints))
+        self.intr_handler = cocotb_start(self.interrupt_handler(ints))
 
-    @coroutine
-    def stop(self):
+    async def stop(self):
         self.drive = False
         while self.tl_adapter.onGoing():
-            yield RisingEdge(self.dut.clock)
+            await RisingEdge(self.dut.clock)
         self.tl_adapter.stop()
         while self.tl_adapter.isRunning():
-            yield RisingEdge(self.dut.clock)
+            await RisingEdge(self.dut.clock)
 
-        self.int_ports.seip <= 0
-        self.int_ports.meip <= 0
-        self.int_ports.msip <= 0
-        self.int_ports.mtip <= 0
+        self.int_ports.seip.value = 0
+        self.int_ports.meip.value = 0
+        self.int_ports.msip.value = 0
+        self.int_ports.mtip.value = 0
 
         self.intr = 0
