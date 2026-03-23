@@ -208,9 +208,9 @@ class rvRTLhost():
                     self.adapter.probe_tohost(tohost_addr)
 
         await self.adapter.stop()
-        # Note: In cocotb 2.0+, tasks are automatically cleaned up when they go out of scope
-        # clk_driver.kill() is no longer needed and may cause issues
-        # clk_driver.kill()
+        # Stop the clock driver to prevent multiple concurrent clock tasks
+        # This is critical in cocotb 2.0+ where tasks don't auto-cleanup
+        clk_driver.kill()
 
         # Check all the CPU's memory access operations occurs in DRAM
         mem_check = True

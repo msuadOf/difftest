@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import struct
 
-from elf_utils import get_symbols, elf_to_memory_dict, memory_dict_to_rtl_hex, DRAM_BASE, get_elf_isa_width, extract_data_sections, get_text_section_end, get_data_sections_info
+from elf_utils import get_symbols, elf_to_memory_dict, memory_dict_to_rtl_hex, DRAM_BASE, get_elf_isa_width, extract_data_sections, get_text_section_end
 
 
 # Path to the DifuzzRTL template includes
@@ -134,47 +134,13 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
 
     user_code = '\n'.join(word_directives)
 
-    # Get information about original data sections to preserve them at their original addresses
-    original_data_sections = get_data_sections_info(elf_path)
-
-    # Generate assembly code to preserve original data sections at their addresses
-    original_data_code_parts = []
-    for sect_name, sect_addr, sect_size in original_data_sections:
-        # Extract data bytes from memory dict
-        section_bytes = bytearray()
-        for addr in range(sect_addr, sect_addr + sect_size):
-            word_addr = addr & ~0x7
-            if word_addr in memory:
-                word = memory[word_addr]
-                byte_offset = addr - word_addr
-                section_bytes.append((word >> (byte_offset * 8)) & 0xFF)
-            else:
-                section_bytes.append(0)
-
-        # Generate assembly directives for this section
-        data_directives = []
-        for j in range(0, len(section_bytes), 8):
-            if j + 8 <= len(section_bytes):
-                word = int.from_bytes(section_bytes[j:j+8], byteorder='little')
-                data_directives.append(f'    .dword 0x{word:016x}')
-            elif j + 4 <= len(section_bytes):
-                word = int.from_bytes(section_bytes[j:j+4], byteorder='little')
-                data_directives.append(f'    .word 0x{word:08x}')
-            elif j + 2 <= len(section_bytes):
-                halfword = int.from_bytes(section_bytes[j:j+2], byteorder='little')
-                data_directives.append(f'    .halfword 0x{halfword:04x}')
-            else:
-                data_directives.append(f'    .byte 0x{section_bytes[j]:02x}')
-
-        data_code = '\n'.join(data_directives)
-        original_data_code_parts.append(f'''.section {sect_name},"aw",@progbits
-.org 0x{sect_addr:x}
-{data_code}
-''')
-
-    original_data_code = '\n'.join(original_data_code_parts) if original_data_code_parts else ''
-
     # Extract data sections from original ELF to populate _random_data regions
+    # Note: We do NOT preserve original data section addresses in the wrapper
+    # because .org uses absolute addresses which don't work correctly in
+    # relocatable sections. For DifuzzRTL's use case (testing simple instruction
+    # sequences), this is acceptable. If testing programs with data sections
+    # is needed, the approach would be to use the original ELF directly without
+    # wrapping, or to modify the linker script.
     data_sections = extract_data_sections(elf_path, max_sections=6)
 
     # Generate data section assembly code
@@ -467,10 +433,6 @@ _end_main:
     unimp
 
 .data
-
-# Original data sections preserved at their addresses
-# This ensures programs that reference globals/strings work correctly
-{original_data_code}
 
 # tohost/fromhost for spike communication
 .pushsection .tohost,"aw",@progbits
