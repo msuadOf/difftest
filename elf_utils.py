@@ -299,17 +299,40 @@ def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
     The emitted format is one 64-bit hex value per line, covering the range
     from _start to _end_main + 36 (the +36 buffer is for post-code data
     like the signature writeout routine).
+
+    For normal cases where _start and _end_main are close (within DRAM),
+    the entire range is emitted. For sparse cases (e.g., _start at low address
+    but code at DRAM_BASE), only addresses that exist in memory are emitted
+    to avoid generating huge files.
     """
     _start = symbols.get('_start', 0x80000000)
     _end_main = symbols.get('_end_main', _start + 0x1000)
 
-    # RTL host loads from _start to _end_main + 36 in 8-byte increments
-    # Range is [start, stop) so we use _end_main + 36 as stop (excluded)
-    lines = []
-    for addr in range(_start, _end_main + 36, 8):
-        # Get value from memory dict, default to 0 for gaps/unmapped regions
-        value = memory.get(addr, 0)
-        lines.append(f'{value:016x}')
+    # Determine the range for hex generation
+    range_size = (_end_main + 36) - _start
+
+    # If range is reasonable (< 1MB), generate all addresses
+    # Otherwise, only generate addresses that exist in memory dict
+    MAX_CONTIGUOUS_RANGE = 1024 * 1024  # 1MB threshold
+
+    if range_size <= MAX_CONTIGUOUS_RANGE:
+        # Normal case: generate all addresses in range
+        lines = []
+        for addr in range(_start, _end_main + 36, 8):
+            # Get value from memory dict, default to 0 for gaps/unmapped regions
+            value = memory.get(addr, 0)
+            lines.append(f'{value:016x}')
+    else:
+        # Sparse case: only generate addresses that exist in memory
+        # Sort addresses and generate hex lines in order
+        sorted_addrs = sorted(memory.keys())
+        lines = []
+        for addr in sorted_addrs:
+            # Only include addresses in the expected range
+            # (allow some tolerance for _end_main calculation)
+            if _start <= addr < (_end_main + 0x1000):
+                value = memory[addr]
+                lines.append(f'{value:016x}')
 
     with open(output_hex_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
