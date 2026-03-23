@@ -23,8 +23,8 @@ def cocotb_start(func):
     try:
         return cocotb.start_soon(func)
     except AttributeError:
-        # cocotb < 2.0
-        return cocotb_start(func)
+        # cocotb < 2.0: use fork() to schedule the coroutine
+        return cocotb.fork(func)
 
 
 NORMAL          = 0

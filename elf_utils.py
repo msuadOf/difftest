@@ -257,12 +257,28 @@ def elf_to_memory_dict(elf_path):
         if len(padded_data) % 8 != 0:
             padded_data += b'\x00' * (8 - len(padded_data) % 8)
 
-        # Store file data
+        # Store file data, preserving existing bytes for partially-overwritten words
         for i in range(0, len(padded_data), 8):
             addr = aligned_addr + i
             if i + 8 <= len(padded_data):
-                word = struct.unpack_from('<Q', padded_data, i)[0]
-                memory[addr] = word
+                new_word = struct.unpack_from('<Q', padded_data, i)[0]
+
+                # If this address already has data, merge the new data with existing
+                if addr in memory:
+                    existing_word = memory[addr]
+                    # Calculate which bytes to update
+                    for byte_idx in range(8):
+                        # Check if this byte position is within the actual segment data
+                        seg_byte_pos = i + byte_idx - addr_offset
+                        if 0 <= seg_byte_pos < len(seg_data):
+                            # Extract byte from new_word
+                            new_byte = (new_word >> (byte_idx * 8)) & 0xFF
+                            # Clear and set the byte in existing_word
+                            byte_mask = 0xFF << (byte_idx * 8)
+                            existing_word = (existing_word & ~byte_mask) | (new_byte << (byte_idx * 8))
+                    memory[addr] = existing_word
+                else:
+                    memory[addr] = new_word
 
         # Zero-fill BSS region (memsz > filesz)
         if memsz > filesz:

@@ -127,8 +127,24 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
     if has_signature_symbols(symbols):
         # ELF already has signature infrastructure, use directly
         wrapped_elf = elf_path
-        wrapped_hex = elf_path.replace('.elf', '.hex')  # Assume hex exists
+        wrapped_hex = elf_path.replace('.elf', '.hex')
         wrapped_symbols = symbols
+
+        # Generate hex file if it doesn't exist
+        if not os.path.isfile(wrapped_hex):
+            if debug:
+                print(f'[Difftest] Generating hex file for instrumented ELF...')
+            try:
+                from elf_utils import elf_to_memory_dict, memory_dict_to_rtl_hex
+                memory_dict = elf_to_memory_dict(wrapped_elf)
+                memory_dict_to_rtl_hex(memory_dict, symbols, wrapped_hex)
+                if debug:
+                    print(f'[Difftest] Generated hex file: {wrapped_hex}')
+            except Exception as e:
+                result['status'] = 'ERROR'
+                result['details'] = f'Failed to generate hex file for instrumented ELF: {e}'
+                return result
+
         if debug:
             print(f'[Difftest] ELF already has signature symbols, using directly')
     else:
@@ -383,6 +399,24 @@ def main():
             ]
             # Use set to deduplicate in case a file matches both patterns
             elf_files = sorted(set(f for p in patterns for f in glob.glob(p)))
+
+            # De-duplicate same-stem .elf/.bin pairs
+            # If both test.elf and test.bin exist, prefer .elf (since .bin will resolve to it)
+            seen_stems = set()
+            deduped_files = []
+            for f in elf_files:
+                stem = os.path.splitext(os.path.basename(f))[0]
+                if stem not in seen_stems:
+                    seen_stems.add(stem)
+                    deduped_files.append(f)
+                elif f.endswith('.elf'):
+                    # Replace .bin entry with .elf entry
+                    # Find and replace the existing entry
+                    for i, existing in enumerate(deduped_files):
+                        if os.path.splitext(os.path.basename(existing))[0] == stem:
+                            deduped_files[i] = f
+                            break
+            elf_files = deduped_files
         else:
             pattern = os.path.join(args.progs_dir, args.pattern)
             elf_files = sorted(glob.glob(pattern))
