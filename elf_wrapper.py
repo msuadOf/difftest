@@ -368,8 +368,8 @@ reset_vector:
     la t0, trap_handler
     csrw mtvec, t0
 
-    # Enable FP: set mstatus.FS = 01 (Initial)
-    # mstatus.FS is bits [14:13], value 01 = 0x2000
+    # Enable FP: set mstatus.FS = 11 (Dirty)
+    # mstatus.FS is bits [14:13], value 11 = 0x6000
     li t0, 0x6000
     csrs mstatus, t0
 
