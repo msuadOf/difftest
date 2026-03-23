@@ -6,12 +6,17 @@ try:
     from cocotb.decorators import coroutine
     HAS_OLD_COROUTINE = True
 except ImportError:
-    # cocotb 2.0+ removed @coroutine decorator
-    # Define a no-op decorator for async functions
-    def coroutine(func):
-        """No-op decorator for modern cocotb async functions."""
-        return func
-    HAS_OLD_COROUTINE = False
+    # cocotb 2.0+ moved @coroutine to cocotb module
+    try:
+        import cocotb
+        coroutine = cocotb.coroutine
+        HAS_OLD_COROUTINE = False
+    except (ImportError, AttributeError):
+        # Last resort: define identity wrapper (will fail but provides clear error)
+        def coroutine(func):
+            """Identity wrapper - will fail if used incorrectly."""
+            return func
+        HAS_OLD_COROUTINE = False
 from RTLSim.host import ILL_MEM, SUCCESS, TIME_OUT, ASSERTION_FAIL
 
 from src.utils import *
@@ -23,8 +28,8 @@ def cocotb_start(func):
     try:
         return cocotb.start_soon(func)
     except AttributeError:
-        # cocotb < 2.0
-        return cocotb_start(func)
+        # cocotb < 2.0: use fork() to schedule the coroutine
+        return cocotb.fork(func)
 
 
 

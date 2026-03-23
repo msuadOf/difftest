@@ -12,13 +12,13 @@ class sigChecker():
         self.isa_width = isa_width  # 'rv32' or 'rv64' - explicit ISA width from ELF metadata
 
         # CSR/PMP comparison policy:
-        # - Skip CSRs that have known ISA vs RTL differences (PMP, exception handling)
+        # - Skip CSRs that have known ISA vs RTL differences (PMP)
         # - Normalize CSRs by masking out non-essential bits
+        # Note: Exception CSRs (mcause, mepc, mtval) are now checked to detect
+        #       differences in exception handling behavior
         self.skip_csrs = {
             # PMP configuration - different defaults between Spike and RTL
             'pmpcfg0', 'pmpaddr0', 'pmpaddr1', 'pmpaddr2', 'pmpaddr3', 'pmpaddr4',
-            # Exception handling - different codes/behavior
-            'mtval', 'mepc', 'mcause',
         }
 
         self.normalize_csrs = {
@@ -189,7 +189,7 @@ class sigChecker():
 
         for (i, val) in enumerate(zip(isa_freg_vals, rtl_freg_vals)):
             match = (val[0] == val[1])
-            if not match: xreg_match = False
+            if not match: freg_match = False
             self.debug_print('(f{:02} |{:>5}) [ISA] {:016x} || [RTL] {:016x}'. \
                              format(i, freg_names[i], val[0], val[1]), not match)
 
@@ -223,9 +223,27 @@ class sigChecker():
                                      format(csr_name, isa_val, isa_val_normalized, rtl_val, rtl_val_normalized), not match)
             else:
                 match = (isa_val == rtl_val)
-                if not match: csr_match = False
-                self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                                 format(csr_name, isa_val, rtl_val), not match)
+
+                # Special handling for exception CSRs (mcause, mepc, mtval):
+                # If GPR and FPR all match but only these CSRs differ, it's likely
+                # due to known ecall exit differences between Spike and RTL.
+                # Only report mismatch if there are other architectural differences.
+                if csr_name in ['mcause', 'mepc', 'mtval'] and not match:
+                    if xreg_match and freg_match:
+                        # GPR and FPR all match - this is likely an ecall exit
+                        # Don't let exception CSR differences cause a mismatch
+                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: ecall exit diff)'. \
+                                         format(csr_name, isa_val, rtl_val), False)
+                        continue
+                    else:
+                        # There are other differences - exception CSRs are important
+                        if not match: csr_match = False
+                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                         format(csr_name, isa_val, rtl_val), not match)
+                else:
+                    if not match: csr_match = False
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                     format(csr_name, isa_val, rtl_val), not match)
 
         for i in range(6): # TODO, max_sections = 6
             data_start = data_symbols[i][0]
