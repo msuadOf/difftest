@@ -299,40 +299,17 @@ def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
     The emitted format is one 64-bit hex value per line, covering the range
     from _start to _end_main + 36 (the +36 buffer is for post-code data
     like the signature writeout routine).
-
-    For normal cases where _start and _end_main are close (within DRAM),
-    the entire range is emitted. For sparse cases (e.g., _start at low address
-    but code at DRAM_BASE), only addresses that exist in memory are emitted
-    to avoid generating huge files.
     """
     _start = symbols.get('_start', 0x80000000)
     _end_main = symbols.get('_end_main', _start + 0x1000)
 
-    # Determine the range for hex generation
-    range_size = (_end_main + 36) - _start
-
-    # If range is reasonable (< 1MB), generate all addresses
-    # Otherwise, only generate addresses that exist in memory dict
-    MAX_CONTIGUOUS_RANGE = 1024 * 1024  # 1MB threshold
-
-    if range_size <= MAX_CONTIGUOUS_RANGE:
-        # Normal case: generate all addresses in range
-        lines = []
-        for addr in range(_start, _end_main + 36, 8):
-            # Get value from memory dict, default to 0 for gaps/unmapped regions
-            value = memory.get(addr, 0)
-            lines.append(f'{value:016x}')
-    else:
-        # Sparse case: only generate addresses that exist in memory
-        # Sort addresses and generate hex lines in order
-        sorted_addrs = sorted(memory.keys())
-        lines = []
-        for addr in sorted_addrs:
-            # Only include addresses in the expected range
-            # (allow some tolerance for _end_main calculation)
-            if _start <= addr < (_end_main + 0x1000):
-                value = memory[addr]
-                lines.append(f'{value:016x}')
+    # RTL host loads from _start to _end_main + 36 in 8-byte increments
+    # Range is [start, stop) so we use _end_main + 36 as stop (excluded)
+    lines = []
+    for addr in range(_start, _end_main + 36, 8):
+        # Get value from memory dict, default to 0 for gaps/unmapped regions
+        value = memory.get(addr, 0)
+        lines.append(f'{value:016x}')
 
     with open(output_hex_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
@@ -759,3 +736,133 @@ def extract_data_sections(elf_path, max_sections=6):
                     extracted_data.append(section_data)
 
     return extracted_data
+
+
+def get_spike_memory_map(elf_path, symbols=None):
+    """
+    Derive Spike -m<a:m,...> memory map regions from an ELF file.
+
+    Spike's -m flag format is -m<a:m,...> where:
+    - Each region is <base>:<size>
+    - Regions are 4 KiB aligned
+    - Multiple regions can be specified separated by commas
+
+    This function analyzes the ELF's PT_LOAD segments and derives the
+    memory map regions needed for Spike to access all memory regions,
+    including any low-address communication regions (tohost/fromhost).
+
+    Args:
+        elf_path: Path to the ELF file
+        symbols: Optional symbol dictionary (if None, will call get_symbols())
+
+    Returns:
+        List of (base, size) tuples suitable for Spike's -m flag,
+        or None if no special memory mapping is needed (all segments at DRAM_BASE)
+
+    Example:
+        >>> regions = get_spike_memory_map('progs/test.elf')
+        >>> if regions:
+        >>>     spike_args = ['-m' + ','.join([f'{base:x}:{size:x}' for base, size in regions])]
+        >>>     # spike_args might be ['-m0x1000:0x1000,0x7000:0x1000']
+    """
+    if symbols is None:
+        symbols = get_symbols(elf_path)
+
+    if not os.path.isfile(elf_path):
+        raise FileNotFoundError(f"ELF file not found: {elf_path}")
+
+    # Get PT_LOAD segments from the ELF
+    load_segments = []
+    try:
+        result = subprocess.run(
+            ['riscv64-unknown-elf-readelf', '-l', elf_path],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            result = subprocess.run(
+                ['readelf', '-l', elf_path],
+                capture_output=True, text=True
+            )
+    except FileNotFoundError:
+        raise RuntimeError("readelf not found")
+
+    # Parse PT_LOAD segments
+    in_load_segment = False
+    for line in result.stdout.split('\n'):
+        line = line.strip()
+        if line.startswith('LOAD'):
+            in_load_segment = True
+            # Parse: LOAD 0x001000 0x80000000 0x80000000 0x005c4 0x005c4 R E 0x1000
+            # parts: [0]=LOAD, [1]=Offset, [2]=VirtAddr, [3]=PhysAddr, [4]=FileSiz, [5]=MemSiz, ...
+            parts = line.split()
+            if len(parts) >= 6 and parts[0] == 'LOAD':
+                try:
+                    vaddr = int(parts[2], 16)  # VirtAddr is at index 2
+                    memsz = int(parts[5], 16)  # MemSiz is at index 5
+                    load_segments.append((vaddr, memsz))
+                except ValueError:
+                    continue
+        elif in_load_segment and line and not line[0].isspace():
+            # End of LOAD segment info
+            in_load_segment = False
+
+    if not load_segments:
+        return None  # No PT_LOAD segments found, use default mapping
+
+    DRAM_BASE = 0x80000000
+
+    # Build regions map, aligning to 4 KiB boundaries
+    regions = []
+    for vaddr, memsz in load_segments:
+        # Align base down to 4 KiB
+        base = vaddr & ~0xFFF
+        # Align size up to 4 KiB
+        size = ((memsz + 0xFFF) & ~0xFFF)
+
+        # Check if this region is at DRAM_BASE or below
+        if base >= DRAM_BASE:
+            # Normal DRAM region - Spike handles this by default
+            continue
+        else:
+            # Low-address region - needs explicit mapping
+            # Avoid duplicates by checking if this region overlaps with existing
+            overlaps = False
+            for existing_base, existing_size in regions:
+                existing_end = existing_base + existing_size
+                new_end = base + size
+                if not (new_end <= existing_base or base >= existing_end):
+                    overlaps = True
+                    break
+
+            if not overlaps:
+                regions.append((base, size))
+
+    # Check for tohost/fromhost at low addresses
+    tohost_addr = symbols.get('tohost', 0)
+    fromhost_addr = symbols.get('fromhost', 0)
+
+    for comm_addr in [tohost_addr, fromhost_addr]:
+        if comm_addr and comm_addr < DRAM_BASE:
+            # Align to 4 KiB
+            base = comm_addr & ~0xFFF
+            size = 0x1000  # 4 KiB region
+
+            # Check for overlap
+            overlaps = False
+            for existing_base, existing_size in regions:
+                existing_end = existing_base + existing_size
+                new_end = base + size
+                if not (new_end <= existing_base or base >= existing_end):
+                    overlaps = True
+                    break
+
+            if not overlaps and (base, size) not in regions:
+                regions.append((base, size))
+
+    # Sort regions by base address
+    regions.sort(key=lambda x: x[0])
+
+    if not regions:
+        return None  # No low-address regions found, use default mapping
+
+    return regions

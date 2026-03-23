@@ -17,7 +17,7 @@ import os
 import sys
 import tempfile
 
-from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, resolve_bin_to_elf
+from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, resolve_bin_to_elf, get_spike_memory_map
 from elf_wrapper import wrap_elf_for_difftest
 from spike_runner import run_spike, find_spike
 
@@ -159,10 +159,24 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
     # Run Spike on the wrapped ELF
     isa_sig_path = os.path.join(output_dir, basename + '_isa_sig.txt')
     try:
+        # Build Spike extra args for memory map
+        spike_extra_args = []
+        mem_regions = get_spike_memory_map(wrapped_elf, wrapped_symbols)
+        if mem_regions and debug:
+            print(f'[Difftest] Memory map regions: {[f"0x{base:x}:0x{size:x}" for base, size in mem_regions]}')
+
+        if mem_regions:
+            # Format as -m0x<a>:0x<m>,... (Spike requires 0x prefix)
+            mem_map_str = ','.join([f'0x{base:x}:0x{size:x}' for base, size in mem_regions])
+            spike_extra_args = [f'-m{mem_map_str}']
+            if debug:
+                print(f'[Difftest] Spike memory map: -m{mem_map_str}')
+
         spike_rc, isa_sig = run_spike(
             wrapped_elf,
             sig_file=isa_sig_path,
             isa=spike_isa,
+            extra_args=spike_extra_args if spike_extra_args else None,
             timeout=timeout,
             debug=debug
         )
