@@ -134,10 +134,13 @@ class rvRTLhost():
         fd.close()
 
         max_cycles = rtl_input.max_cycles
+        self.debug_print(f'[RTLHost] max_cycles: {max_cycles}')
 
         symbols = rtl_input.symbols
         _start = symbols['_start']
         _end = symbols['_end_main']
+
+        self.debug_print(f'[RTLHost] Loading program: _start=0x{_start:x}, _end_main=0x{_end:x}')
 
         (bootrom_addrs, memory) = self.set_bootrom()
         for (i, addr) in enumerate(range(_start, _end + 36, 8)):
@@ -146,6 +149,8 @@ class rvRTLhost():
         tohost_addr = symbols['tohost']
         sig_start = symbols['begin_signature']
         sig_end = symbols['end_signature']
+
+        self.debug_print(f'[RTLHost] tohost=0x{tohost_addr:x}, sig_start=0x{sig_start:x}, sig_end=0x{sig_end:x}')
 
         memory[tohost_addr] = 0
         for addr in range(sig_start // 8 * 8, sig_end, 8):
@@ -165,6 +170,8 @@ class rvRTLhost():
 
             offset += (data_end - data_start) // 8
 
+        self.debug_print(f'[RTLHost] Loaded {len(data)} data words')
+
         ints = {}
         if assert_intr:
             fd = open(rtl_input.intrfile, 'r')
@@ -181,12 +188,16 @@ class rvRTLhost():
         await self.reset(clk, self.dut.metaReset, self.dut.reset)
 
         self.adapter.start(memory, ints)
+        self.debug_print('[RTLHost] Adapter started, beginning execution')
+
         for i in range(max_cycles):
             await clkedge
 
             if i % 100 == 0:
                 tohost = memory[tohost_addr]
+                self.debug_print(f'[RTLHost] Cycle {i}: tohost=0x{tohost:x}')
                 if tohost:
+                    self.debug_print(f'[RTLHost] tohost set, exiting at cycle {i}')
                     break
                 else:
                     self.adapter.probe_tohost(tohost_addr)

@@ -35,12 +35,9 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
         timeout: Simulation timeout in seconds (default: 120)
 
     Returns:
-        Tuple of (result_code, coverage) where result_code is one of:
-        - SUCCESS (0): Simulation completed successfully
-        - ASSERTION_FAIL (1): Assertion failure occurred
-        - TIME_OUT (2): Simulation timed out
-        - ILL_MEM (-1): Illegal memory access detected
-        coverage: Coverage value from simulation (0 if not available)
+        Tuple of (result_code, diagnostics) where:
+        - result_code: SUCCESS (0), ASSERTION_FAIL (1), TIME_OUT (2), or ILL_MEM (-1)
+        - diagnostics: dict with 'make_exit_code', 'stdout_tail', 'stderr_tail' keys
     """
     # Ensure the RTL input hex file exists
     if not os.path.isfile(rtl_input.hexfile):
@@ -129,20 +126,20 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
             # Only subprocess.TimeoutExpired should return TIME_OUT
             if result.returncode == 0:
                 # Make succeeded but no signature file - this is unexpected
-                return (ASSERTION_FAIL, 0)
+                return (ASSERTION_FAIL, {'make_exit_code': 0, 'stderr_tail': 'No signature file produced'})
             # Make failed with non-zero exit code
-            return (ASSERTION_FAIL, result.returncode)
+            return (ASSERTION_FAIL, {'make_exit_code': result.returncode, 'stderr_tail': result.stderr[-500:] if result.stderr else ''})
 
         # Return the actual result code from the simulation
         # The test exits with the result code, so returncode is the simulation result
-        return (result.returncode, 0)
+        return (result.returncode, {'make_exit_code': result.returncode})
 
     except subprocess.TimeoutExpired:
-        return (TIME_OUT, 0)
+        return (TIME_OUT, {'make_exit_code': None, 'stderr_tail': 'Timeout'})
     except Exception as e:
         if debug:
             print(f'[RTL Runner] Exception: {e}')
-        return (ASSERTION_FAIL, 0)
+        return (ASSERTION_FAIL, {'make_exit_code': None, 'stderr_tail': str(e)})
     finally:
         # Clean up temporary config file
         if os.path.exists(config_path):

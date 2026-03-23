@@ -475,11 +475,14 @@ def resolve_bin_to_elf(bin_path, isa_width_hint=None):
             pass
 
     # No valid sibling .elf found, generate a minimal ELF
-    # Detect ISA width from binary contents or use hint
-    if isa_width_hint:
-        isa_width = isa_width_hint
-    else:
-        isa_width = detect_isa_from_binary(bin_path)
+    # For standalone .bin files, require explicit ISA width
+    if not isa_width_hint:
+        raise ValueError(
+            f"Standalone .bin file requires explicit --isa-width parameter. "
+            f"Please specify --isa-width rv32 or --isa-width rv64."
+        )
+
+    isa_width = isa_width_hint
 
     # Generate minimal ELF
     generated_elf = bin_to_elf(bin_path, output_elf_path=None, isa_width=isa_width)

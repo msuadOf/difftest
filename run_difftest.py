@@ -38,7 +38,7 @@ except ImportError as e:
     RTL_AVAILABLE = False
 
 
-def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=False, timeout=30, isa_only=False):
+def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=False, timeout=30, isa_only=False, isa_width=None):
     """
     Run difftest on a single ELF file.
 
@@ -48,6 +48,8 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         rtl_sig_file: Optional pre-generated RTL signature for comparison
         debug: Enable verbose output
         timeout: Spike timeout in seconds
+        isa_only: Run Spike only, skip RTL comparison
+        isa_width: Explicit ISA width for .bin files (rv32 or rv64)
 
     Returns dict with:
         'elf': original ELF path
@@ -82,7 +84,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
         try:
             # Resolve .bin to ELF (uses sibling .elf if available, otherwise generates minimal ELF)
-            resolved_elf, isa_width, resolved_symbols = resolve_bin_to_elf(elf_path)
+            resolved_elf, isa_width, resolved_symbols = resolve_bin_to_elf(elf_path, isa_width_hint=isa_width)
 
             if debug:
                 print(f'[Difftest] Resolved .bin to ELF: {resolved_elf}')
@@ -236,7 +238,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
             if debug:
                 print(f'[Difftest] Running RTL simulation...')
 
-            rtl_result_code, _ = run_rtl_simulation(
+            rtl_result_code, diagnostics = run_rtl_simulation(
                 rtl_input_bundle,
                 rtl_sig_path=rtl_sig_path,
                 debug=debug,
@@ -245,6 +247,8 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
             if debug:
                 print(f'[Difftest] RTL simulation result: {rtl_result_code}')
+                if diagnostics.get('stderr_tail'):
+                    print(f'[Difftest] RTL stderr: {diagnostics["stderr_tail"][-200:]}')
 
             # Check RTL result
             if rtl_result_code == SUCCESS:
@@ -252,11 +256,16 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
                     print(f'[Difftest] RTL simulation successful')
             elif rtl_result_code == TIME_OUT:
                 result['status'] = 'ERROR'
-                result['details'] = 'RTL simulation timed out'
+                result['details'] = f'RTL simulation timed out. {diagnostics.get("stderr_tail", "")}'
                 return result
             elif rtl_result_code == ASSERTION_FAIL:
                 result['status'] = 'ERROR'
-                result['details'] = 'RTL simulation assertion failure'
+                make_exit = diagnostics.get('make_exit_code', 'unknown')
+                stderr = diagnostics.get('stderr_tail', '')
+                if make_exit and make_exit != 1:
+                    result['details'] = f'RTL make/configuration failed (exit code {make_exit}): {stderr[-200:]}'
+                else:
+                    result['details'] = f'RTL simulation assertion failure. {stderr[-200:]}'
                 return result
             elif rtl_result_code == ILL_MEM:
                 result['status'] = 'ERROR'
@@ -320,6 +329,8 @@ def main():
                         help='Output directory for wrapped files and signatures')
     parser.add_argument('--timeout', type=int, default=30,
                         help='Spike timeout in seconds (default: 30)')
+    parser.add_argument('--isa-width', type=str, choices=['rv32', 'rv64'], default=None,
+                        help='Explicit ISA width for .bin files (rv32 or rv64). Required for standalone .bin files without sibling .elf.')
     parser.add_argument('--rtl-sig', type=str, default=None,
                         help='Pre-generated RTL signature file for comparison (required for end-to-end difftest)')
     parser.add_argument('--isa-only', action='store_true',
@@ -385,7 +396,8 @@ def main():
             rtl_sig_file=args.rtl_sig,
             debug=args.debug,
             timeout=args.timeout,
-            isa_only=args.isa_only
+            isa_only=args.isa_only,
+            isa_width=args.isa_width
         )
         results.append(result)
 
