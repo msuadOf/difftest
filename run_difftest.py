@@ -17,7 +17,7 @@ import os
 import sys
 import tempfile
 
-from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, resolve_bin_to_elf, get_spike_memory_map
+from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, resolve_bin_to_elf, get_spike_memory_map, get_data_sections_info
 from elf_wrapper import wrap_elf_for_difftest
 from spike_runner import run_spike, find_spike
 
@@ -148,6 +148,19 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         if debug:
             print(f'[Difftest] ELF already has signature symbols, using directly')
     else:
+        # Check if ELF has data sections before wrapping
+        # Wrapping changes the memory layout, which breaks PC-relative references
+        data_sections = get_data_sections_info(elf_path)
+        if data_sections:
+            result['status'] = 'UNSUPPORTED'
+            data_info = ', '.join([f'{name}@0x{addr:x}' for name, addr, size in data_sections])
+            result['details'] = (
+                f'ELF has data sections ({data_info}) but lacks signature symbols. '
+                f'Wrapping would change the memory layout and break PC-relative references. '
+                f'Please use an ELF that already includes the DifuzzRTL signature infrastructure.'
+            )
+            return result
+
         # Wrap bare ELF with signature infrastructure
         if debug:
             print(f'[Difftest] Wrapping bare ELF with signature infrastructure...')
