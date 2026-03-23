@@ -247,6 +247,8 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
             if debug:
                 print(f'[Difftest] RTL simulation result: {rtl_result_code}')
+                if diagnostics.get('stdout_tail'):
+                    print(f'[Difftest] RTL stdout: {diagnostics["stdout_tail"][-200:]}')
                 if diagnostics.get('stderr_tail'):
                     print(f'[Difftest] RTL stderr: {diagnostics["stderr_tail"][-200:]}')
 
@@ -262,8 +264,14 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
                 result['status'] = 'ERROR'
                 make_exit = diagnostics.get('make_exit_code', 'unknown')
                 stderr = diagnostics.get('stderr_tail', '')
+                stdout = diagnostics.get('stdout_tail', '')
                 if make_exit and make_exit != 1:
-                    result['details'] = f'RTL make/configuration failed (exit code {make_exit}): {stderr[-200:]}'
+                    details = f'RTL make/configuration failed (exit code {make_exit})'
+                    if stdout:
+                        details += f' | stdout: {stdout[-200:]}'
+                    if stderr:
+                        details += f' | stderr: {stderr[-200:]}'
+                    result['details'] = details
                 else:
                     result['details'] = f'RTL simulation assertion failure. {stderr[-200:]}'
                 return result

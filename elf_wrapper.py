@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import struct
 
-from elf_utils import get_symbols, elf_to_memory_dict, DRAM_BASE, get_elf_isa_width, extract_data_sections
+from elf_utils import get_symbols, elf_to_memory_dict, memory_dict_to_rtl_hex, DRAM_BASE, get_elf_isa_width, extract_data_sections
 
 
 # Path to the DifuzzRTL template includes
@@ -489,23 +489,12 @@ def compile_wrapper(asm_path, original_elf_path=None, output_elf_path=None, outp
             f"Compilation failed:\n{ret.stderr}\nCommand: {' '.join(cc_args)}"
         )
 
-    # Generate flat hex for RTL simulation
-    with tempfile.TemporaryDirectory() as tmpdir:
-        bin_path = os.path.join(tmpdir, 'output.bin')
-        subprocess.run(
-            ['riscv64-unknown-elf-objcopy', output_elf_path, '-O', 'binary', bin_path],
-            check=True, capture_output=True
-        )
-        with open(bin_path, 'rb') as f:
-            data = f.read()
-
-    if len(data) % 8 != 0:
-        data += b'\x00' * (8 - len(data) % 8)
-
-    with open(output_hex_path, 'w') as f:
-        for i in range(0, len(data), 8):
-            word = struct.unpack_from('<Q', data, i)[0]
-            f.write(f'{word:016x}\n')
+    # Generate segment-accurate hex for RTL simulation
+    # This uses elf_to_memory_dict() to preserve actual segment addresses
+    # instead of objcopy's flat binary approach
+    memory = elf_to_memory_dict(output_elf_path)
+    symbols = get_symbols(output_elf_path)
+    memory_dict_to_rtl_hex(memory, symbols, output_hex_path)
 
     return output_elf_path, output_hex_path
 

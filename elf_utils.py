@@ -280,6 +280,42 @@ def elf_to_memory_dict(elf_path):
     return memory
 
 
+def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
+    """
+    Serialize a memory dictionary to RTL hex format.
+
+    This is the segment-accurate alternative to objcopy-based flattening.
+    It preserves each segment's actual virtual address layout while
+    emitting the contiguous hex format expected by RTLSim/host.py.
+
+    Args:
+        memory: Dictionary {addr: 64-bit value} from elf_to_memory_dict()
+        symbols: Symbol dictionary containing _start and _end_main
+        output_hex_path: Path where hex file will be written
+
+    Returns:
+        output_hex_path (for chaining)
+
+    The emitted format is one 64-bit hex value per line, covering the range
+    from _start to _end_main + 36 (the +36 buffer is for post-code data
+    like the signature writeout routine).
+    """
+    _start = symbols.get('_start', 0x80000000)
+    _end_main = symbols.get('_end_main', _start + 0x1000)
+
+    # RTL host loads from _start to _end_main + 36 in 8-byte increments
+    lines = []
+    for addr in range(_start, _end_main + 36 + 8, 8):
+        # Get value from memory dict, default to 0 for gaps/unmapped regions
+        value = memory.get(addr, 0)
+        lines.append(f'{value:016x}')
+
+    with open(output_hex_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+
+    return output_hex_path
+
+
 def has_signature_symbols(symbols):
     """
     Check if the ELF has DifuzzRTL signature infrastructure symbols.

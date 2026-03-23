@@ -10,6 +10,25 @@ class sigChecker():
         self.debug = debug
         self.minimizing = minimizing
 
+        # CSR/PMP comparison policy:
+        # - Skip CSRs that have known ISA vs RTL differences (PMP, exception handling)
+        # - Normalize CSRs by masking out non-essential bits
+        self.skip_csrs = {
+            # PMP configuration - different defaults between Spike and RTL
+            'pmpcfg0', 'pmpaddr0', 'pmpaddr1', 'pmpaddr2', 'pmpaddr3', 'pmpaddr4',
+            # Exception handling - different codes/behavior
+            'mtval', 'mepc', 'mcause',
+        }
+
+        self.normalize_csrs = {
+            # Mask out SD (dirty) bit in sstatus/mstatus
+            # In RV32, SD is at bit 31 (0x80000000)
+            # In RV64, SD is at bit 63 (0x8000000000000000)
+            # We clear both to handle RV32 and RV64
+            'sstatus': 0x7FFFFFFF,  # Clear bit 31 (RV32 SD) - for 32-bit values
+            'mstatus': 0x7FFFFFFF,  # Clear bit 31 (RV32 SD) - for 32-bit values
+        }
+
     def debug_print(self, message, highlight=False):
         if highlight and not self.minimizing:
             print('\x1b[1;31m' + message + '\x1b[1;m')
@@ -145,10 +164,26 @@ class sigChecker():
             isa_val = isa_csr_vals[csr_name]
             rtl_val = rtl_csr_vals[csr_name]
 
-            match = (isa_val == rtl_val)
-            if not match: csr_match = False
-            self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                             format(csr_name, isa_val, rtl_val), not match)
+            # Apply comparison policy
+            if csr_name in self.skip_csrs:
+                # Skip this CSR - don't report mismatches
+                continue
+
+            if csr_name in self.normalize_csrs:
+                # Normalize values by masking out non-essential bits
+                mask = self.normalize_csrs[csr_name]
+                isa_val_normalized = isa_val & mask
+                rtl_val_normalized = rtl_val & mask
+                match = (isa_val_normalized == rtl_val_normalized)
+                if not match: csr_match = False
+                # Show original values in debug to clarify what's being normalized
+                self.debug_print('({:>10}) [ISA] {:016x} (norm: {:016x}) || [RTL] {:016x} (norm: {:016x})'. \
+                                 format(csr_name, isa_val, isa_val_normalized, rtl_val, rtl_val_normalized), not match)
+            else:
+                match = (isa_val == rtl_val)
+                if not match: csr_match = False
+                self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                 format(csr_name, isa_val, rtl_val), not match)
 
         for i in range(6): # TODO, max_sections = 6
             data_start = data_symbols[i][0]

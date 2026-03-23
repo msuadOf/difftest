@@ -90,6 +90,10 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
         env['RTL_RESULT_FILE'] = os.path.abspath(os.path.join(
             os.path.dirname(rtl_sig_path), 'rtl_result.txt'))
 
+        # Export RTL_DEBUG for host-level tracing in single_program_test.py
+        if debug:
+            env['RTL_DEBUG'] = '1'
+
         # Build the make command to run the single program test
         make_cmd = [
             'make',
@@ -122,6 +126,10 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
             if result.stderr:
                 print(f'[RTL Runner] STDERR: {result.stderr[-1000:]}')
 
+        # Prepare diagnostics with stdout/stderr tails
+        stdout_tail = result.stdout[-500:] if result.stdout else ''
+        stderr_tail = result.stderr[-500:] if result.stderr else ''
+
         # Read the actual RTL simulation result from RTL_RESULT_FILE
         # The test writes its result code to this file
         rtl_result_path = env.get('RTL_RESULT_FILE')
@@ -146,21 +154,32 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
                 # No signature file and no result file - simulation failed early
                 return (ASSERTION_FAIL, {
                     'make_exit_code': result.returncode,
-                    'stderr_tail': result.stderr[-500:] if result.stderr else 'No signature or result file'
+                    'stdout_tail': stdout_tail,
+                    'stderr_tail': stderr_tail or 'No signature or result file'
                 })
 
         # Return the actual simulation result code from the result file
         return (actual_result, {
             'make_exit_code': result.returncode,
-            'rtl_result': actual_result
+            'rtl_result': actual_result,
+            'stdout_tail': stdout_tail,
+            'stderr_tail': stderr_tail
         })
 
     except subprocess.TimeoutExpired:
-        return (TIME_OUT, {'make_exit_code': None, 'stderr_tail': 'Timeout'})
+        return (TIME_OUT, {
+            'make_exit_code': None,
+            'stdout_tail': '',
+            'stderr_tail': 'Timeout'
+        })
     except Exception as e:
         if debug:
             print(f'[RTL Runner] Exception: {e}')
-        return (ASSERTION_FAIL, {'make_exit_code': None, 'stderr_tail': str(e)})
+        return (ASSERTION_FAIL, {
+            'make_exit_code': None,
+            'stdout_tail': '',
+            'stderr_tail': str(e)
+        })
     finally:
         # Clean up temporary config file
         if os.path.exists(config_path):
