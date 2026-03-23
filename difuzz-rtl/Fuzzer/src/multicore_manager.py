@@ -17,6 +17,17 @@ except ImportError:
     HAS_OLD_COROUTINE = False
 from cocotb.triggers import RisingEdge, Timer
 
+# Compatibility for signal assignment across cocotb versions
+# cocotb 2.x uses .value =, cocotb 1.x uses <=
+def _set_signal(signal, value):
+    """Set signal value across cocotb versions."""
+    if HAS_OLD_COROUTINE:
+        # cocotb 1.x: use <= operator
+        signal <= value
+    else:
+        # cocotb 2.x: use .value attribute
+        signal.value = value
+
 # Compatibility for cocotb_start() vs cocotb.start_soon()
 def cocotb_start(func):
     """Compatibility wrapper for starting coroutines across cocotb versions."""
@@ -206,9 +217,9 @@ class procManager():
 
     async def clock_gen(self, clock, period=2):
         while True:
-            clock <= 1
+            _set_signal(clock, 1)
             await Timer(period / 2)
-            clock <= 0
+            _set_signal(clock, 0)
             await Timer(period / 2)
 
     async def cov_restore(self, dut):
@@ -216,9 +227,9 @@ class procManager():
 
         clk_driver = cocotb_start(self.clock_gen(dut.clock))
 
-        dut.cov_restore <= 1
+        _set_signal(dut.cov_restore, 1)
         await clkedge
-        dut.cov_restore <= 0
+        _set_signal(dut.cov_restore, 0)
         await clkedge
 
         clk_driver.kill()
@@ -228,10 +239,10 @@ class procManager():
 
         clk_driver = cocotb_start(self.clock_gen(dut.clock))
 
-        dut.cov_store <= 1
-        dut.proc_num <= proc_num
+        _set_signal(dut.cov_store, 1)
+        _set_signal(dut.proc_num, proc_num)
         await clkedge
-        dut.cov_store <= 0
+        _set_signal(dut.cov_store, 0)
         await clkedge
 
         clk_driver.kill()

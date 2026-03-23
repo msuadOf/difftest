@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import struct
 
-from elf_utils import get_symbols, elf_to_memory_dict, memory_dict_to_rtl_hex, DRAM_BASE, get_elf_isa_width, extract_data_sections
+from elf_utils import get_symbols, elf_to_memory_dict, memory_dict_to_rtl_hex, DRAM_BASE, get_elf_isa_width, extract_data_sections, get_text_section_end
 
 
 # Path to the DifuzzRTL template includes
@@ -80,27 +80,23 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
 
     start = symbols.get('_start', DRAM_BASE)
 
-    # Determine the end of code section more carefully
-    # Use _end_main if available, otherwise __bss_start, otherwise estimate
-    if '_end_main' in symbols:
-        end = symbols['_end_main']
-    elif '__bss_start' in symbols:
-        end = symbols['__bss_start']
-    elif '__bss_end' in symbols:
-        end = symbols['__bss_end']
+    # Get the actual end of the .text section from ELF section headers
+    # This is the authoritative source for where executable code ends
+    text_end = get_text_section_end(elf_path)
+
+    if text_end is not None:
+        code_end = text_end
     else:
-        # Fallback: find the highest address in memory
-        if memory:
-            end = max(memory.keys()) + 8
+        # Fallback: use _end_main if available, otherwise estimate
+        if '_end_main' in symbols:
+            code_end = symbols['_end_main']
+        elif memory:
+            code_end = max(memory.keys()) + 8
         else:
-            end = start + 0x1000
+            code_end = start + 0x1000
 
-    # Check if there are data sections we should preserve
-    # We only want to include code in user_code, not data
-    # Look for __bss_start as the boundary between code and data
-    code_end = symbols.get('__bss_start', end)
-
-    # Collect code bytes (up to __bss_start if it exists)
+    # Collect code bytes (up to code_end, which is the actual .text section end)
+    # This excludes .data, .rodata, and .bss sections
     raw_bytes = bytearray()
     for addr in range(start, code_end):
         # Calculate the 8-byte aligned address for this byte
@@ -112,14 +108,29 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
         else:
             raw_bytes.append(0)
 
-    # Generate .word directives from raw bytes (aligned to 4 bytes)
-    if len(raw_bytes) % 4 != 0:
-        raw_bytes.extend(b'\x00' * (4 - len(raw_bytes) % 4))
-
+    # Generate instruction directives from raw bytes
+    # IMPORTANT: Do NOT pad to 4-byte alignment!
+    # The original code may end with a 16-bit compressed instruction,
+    # and adding padding would insert extra zeros that get executed.
+    # Instead, emit a mix of .word and .2byte directives as needed.
     word_directives = []
-    for i in range(0, len(raw_bytes), 4):
-        w = struct.unpack_from('<I', raw_bytes, i)[0]
-        word_directives.append(f'    .word 0x{w:08x}')
+    i = 0
+    while i < len(raw_bytes):
+        if i + 4 <= len(raw_bytes):
+            # Emit a 4-byte word
+            w = struct.unpack_from('<I', raw_bytes, i)[0]
+            word_directives.append(f'    .word 0x{w:08x}')
+            i += 4
+        elif i + 2 <= len(raw_bytes):
+            # Emit a 2-byte halfword (compressed instruction)
+            h = struct.unpack_from('<H', raw_bytes, i)[0]
+            word_directives.append(f'    .2byte 0x{h:04x}')
+            i += 2
+        else:
+            # Odd number of bytes - should not happen in valid RISC-V code
+            # Emit as single byte (not a standard instruction, but preserves data)
+            word_directives.append(f'    .byte 0x{raw_bytes[i]:02x}')
+            i += 1
 
     user_code = '\n'.join(word_directives)
 

@@ -455,6 +455,64 @@ def get_elf_isa_width(elf_path):
     return None
 
 
+def get_text_section_end(elf_path):
+    """
+    Get the actual end address of the .text section from an ELF file.
+
+    This uses readelf to parse the section headers and find the .text section's
+    address and size. Returns the exact end address (vaddr + size) without any
+    padding or alignment assumptions.
+
+    Args:
+        elf_path: Path to the ELF file
+
+    Returns:
+        The end address of the .text section (vaddr + size), or None if not found
+    """
+    result = subprocess.run(
+        ['riscv64-unknown-elf-readelf', '-S', elf_path],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        result = subprocess.run(
+            ['readelf', '-S', elf_path],
+            capture_output=True, text=True
+        )
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.split('\n'):
+        if '.text' in line and 'PROGBITS' in line:
+            # Format: [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
+            # Example: [ 1] .text PROGBITS 80000000 001000 000142 00 AX 0 0 64
+            parts = line.split()
+            if len(parts) >= 6:
+                try:
+                    # Find the address and size columns
+                    # Addr is at index 3, Size at index 5 (after splitting)
+                    addr_idx = None
+                    size_idx = None
+                    for i, p in enumerate(parts):
+                        if 'PROGBITS' in p:
+                            # Next non-header after PROGBITS is Addr
+                            if i + 1 < len(parts):
+                                addr_idx = i + 1
+                            if i + 3 < len(parts):
+                                size_idx = i + 3
+                            break
+
+                    if addr_idx is not None and size_idx is not None:
+                        addr = int(parts[addr_idx], 16)
+                        size = int(parts[size_idx], 16)
+                        return addr + size
+                except (ValueError, IndexError):
+                    continue
+
+    return None
+
+
 def detect_isa_from_binary(bin_path):
     """
     Detect ISA width (RV32 vs RV64) from a raw binary file.
