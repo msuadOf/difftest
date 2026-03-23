@@ -550,9 +550,28 @@ def get_data_sections_info(elf_path):
 
     data_sections = []
 
+    # GNU readelf -S can output section headers in multi-line format.
+    # Merge continuation lines into a single line for easier parsing.
+    # Multi-line example:
+    #   [ 2] .data PROGBITS         00001450  001450
+    #        00000000000002f0  00000000000002f0  WA  0   0 16
+    # Single-line example:
+    #   [ 2] .data PROGBITS 00001450 001450 0002f0 00 WA  0   0 16
+    merged_lines = []
     for line in result.stdout.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Check if this is a continuation line (starts with spaces/whitespace but no '[')
+        # Continuation lines contain Addr, Off, Size, ES, Flg, Lk, Inf, Al values
+        if stripped[0].isspace() and '[' not in stripped and merged_lines:
+            # Append to previous line
+            merged_lines[-1] = merged_lines[-1] + ' ' + stripped
+        else:
+            merged_lines.append(stripped)
+
+    for line in merged_lines:
         # Check for data sections: .data*, .rodata*, .sdata*, .srodata*, etc.
-        # Match sections that START with these prefixes (e.g., .rodata.str1.1)
         if 'PROGBITS' in line:
             parts = line.split()
             if len(parts) >= 6:
@@ -635,7 +654,21 @@ def get_bss_sections_info(elf_path):
 
     bss_sections = []
 
+    # GNU readelf -S can output section headers in multi-line format.
+    # Merge continuation lines into a single line for easier parsing.
+    merged_lines = []
     for line in result.stdout.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Check if this is a continuation line (starts with spaces/whitespace but no '[')
+        if stripped[0].isspace() and '[' not in stripped and merged_lines:
+            # Append to previous line
+            merged_lines[-1] = merged_lines[-1] + ' ' + stripped
+        else:
+            merged_lines.append(stripped)
+
+    for line in merged_lines:
         # Check for BSS sections: .bss*, .sbss*, etc.
         # These sections contain zero-initialized data and take up space in the ELF
         if 'NOBITS' in line:  # BSS sections use NOBITS instead of PROGBITS
@@ -1087,24 +1120,48 @@ def get_spike_memory_map(elf_path, symbols=None):
         raise RuntimeError("readelf not found")
 
     # Parse PT_LOAD segments
-    in_load_segment = False
+    # GNU readelf -l has two formats:
+    # 1. Single-line: LOAD 0x001000 0x00001000 0x00001000 0x00788 0x00788 RWE 0x1000
+    # 2. Multi-line:
+    #    LOAD           0x0000000000001000 0x0000000000001000 0x0000000000001000
+    #                   0x000000000000054c 0x000000000000054c  R E    0x1000
+    pending_vaddr = None
     for line in result.stdout.split('\n'):
-        line = line.strip()
-        if line.startswith('LOAD'):
-            in_load_segment = True
-            # Parse: LOAD 0x001000 0x80000000 0x80000000 0x005c4 0x005c4 R E 0x1000
-            # parts: [0]=LOAD, [1]=Offset, [2]=VirtAddr, [3]=PhysAddr, [4]=FileSiz, [5]=MemSiz, ...
-            parts = line.split()
-            if len(parts) >= 6 and parts[0] == 'LOAD':
+        stripped = line.strip()
+        if stripped.startswith('LOAD'):
+            # Try to parse single-line format first
+            parts = stripped.split()
+            if len(parts) >= 6:
                 try:
+                    # Check if we have all fields on one line (Offset, VirtAddr, PhysAddr, FileSiz, MemSiz)
+                    # Index 1=Offset, 2=VirtAddr, 3=PhysAddr, 4=FileSiz, 5=MemSiz
                     vaddr = int(parts[2], 16)  # VirtAddr is at index 2
                     memsz = int(parts[5], 16)  # MemSiz is at index 5
                     load_segments.append((vaddr, memsz))
-                except ValueError:
+                    pending_vaddr = None
                     continue
-        elif in_load_segment and line and not line[0].isspace():
-            # End of LOAD segment info
-            in_load_segment = False
+                except (ValueError, IndexError):
+                    # Single-line parse failed, might be multi-line format
+                    try:
+                        pending_vaddr = int(parts[2], 16)  # Store VirtAddr, wait for next line for MemSiz
+                    except (ValueError, IndexError):
+                        pending_vaddr = None
+        elif pending_vaddr is not None and stripped:
+            # Second line of multi-line format: contains FileSiz and MemSiz
+            # Format: 0x000000000000054c 0x000000000000054c  R E    0x1000
+            parts = stripped.split()
+            if len(parts) >= 2:
+                try:
+                    memsz = int(parts[1], 16)  # MemSiz is at index 1 on second line
+                    load_segments.append((pending_vaddr, memsz))
+                    pending_vaddr = None
+                except (ValueError, IndexError):
+                    pending_vaddr = None
+            else:
+                pending_vaddr = None
+        elif stripped and not stripped[0].isspace():
+            # Not a continuation line, reset pending state
+            pending_vaddr = None
 
     if not load_segments:
         return None  # No PT_LOAD segments found, use default mapping
