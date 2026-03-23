@@ -24,10 +24,33 @@ class sigChecker():
             # Mask out SD (dirty) bit in sstatus/mstatus
             # In RV32, SD is at bit 31 (0x80000000)
             # In RV64, SD is at bit 63 (0x8000000000000000)
-            # We clear both to handle RV32 and RV64
-            'sstatus': 0x7FFFFFFF,  # Clear bit 31 (RV32 SD) - for 32-bit values
-            'mstatus': 0x7FFFFFFF,  # Clear bit 31 (RV32 SD) - for 32-bit values
+            # We dynamically detect ISA width and apply appropriate mask
+            'sstatus': 'dynamic_sd_mask',
+            'mstatus': 'dynamic_sd_mask',
         }
+
+    def _normalize_csr_value(self, csr_name, isa_val, rtl_val):
+        """
+        Normalize CSR values by clearing the SD (dirty) bit.
+
+        For RV32: SD is at bit 31 (mask: 0x7FFFFFFF)
+        For RV64: SD is at bit 63 (mask: 0x7FFFFFFFFFFFFFFF)
+
+        Returns (normalized_isa_val, normalized_rtl_val)
+        """
+        # Determine if this is RV64 by checking if either value has bit 63 set
+        # or if the value is > 32 bits (beyond 0xFFFFFFFF)
+        max_val = max(isa_val, rtl_val)
+        is_rv64 = max_val > 0xFFFFFFFF or (max_val >> 63) & 1
+
+        if is_rv64:
+            # RV64: clear bit 63
+            mask = 0x7FFFFFFFFFFFFFFF
+        else:
+            # RV32: clear bit 31
+            mask = 0x7FFFFFFF
+
+        return (isa_val & mask, rtl_val & mask)
 
     def debug_print(self, message, highlight=False):
         if highlight and not self.minimizing:
@@ -170,15 +193,24 @@ class sigChecker():
                 continue
 
             if csr_name in self.normalize_csrs:
-                # Normalize values by masking out non-essential bits
-                mask = self.normalize_csrs[csr_name]
-                isa_val_normalized = isa_val & mask
-                rtl_val_normalized = rtl_val & mask
-                match = (isa_val_normalized == rtl_val_normalized)
-                if not match: csr_match = False
-                # Show original values in debug to clarify what's being normalized
-                self.debug_print('({:>10}) [ISA] {:016x} (norm: {:016x}) || [RTL] {:016x} (norm: {:016x})'. \
-                                 format(csr_name, isa_val, isa_val_normalized, rtl_val, rtl_val_normalized), not match)
+                policy = self.normalize_csrs[csr_name]
+                if policy == 'dynamic_sd_mask':
+                    # Dynamically detect ISA width and apply appropriate SD mask
+                    isa_val, rtl_val = self._normalize_csr_value(csr_name, isa_val, rtl_val)
+                    match = (isa_val == rtl_val)
+                    if not match: csr_match = False
+                    # Debug without showing original vs normalized to reduce clutter
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                     format(csr_name, isa_val, rtl_val), not match)
+                else:
+                    # Fixed mask policy (not currently used)
+                    mask = policy
+                    isa_val_normalized = isa_val & mask
+                    rtl_val_normalized = rtl_val & mask
+                    match = (isa_val_normalized == rtl_val_normalized)
+                    if not match: csr_match = False
+                    self.debug_print('({:>10}) [ISA] {:016x} (norm: {:016x}) || [RTL] {:016x} (norm: {:016x})'. \
+                                     format(csr_name, isa_val, isa_val_normalized, rtl_val, rtl_val_normalized), not match)
             else:
                 match = (isa_val == rtl_val)
                 if not match: csr_match = False

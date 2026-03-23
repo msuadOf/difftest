@@ -304,8 +304,9 @@ def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
     _end_main = symbols.get('_end_main', _start + 0x1000)
 
     # RTL host loads from _start to _end_main + 36 in 8-byte increments
+    # Range is [start, stop) so we use _end_main + 36 as stop (excluded)
     lines = []
-    for addr in range(_start, _end_main + 36 + 8, 8):
+    for addr in range(_start, _end_main + 36, 8):
         # Get value from memory dict, default to 0 for gaps/unmapped regions
         value = memory.get(addr, 0)
         lines.append(f'{value:016x}')
