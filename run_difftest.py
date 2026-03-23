@@ -306,7 +306,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
     # Use DifuzzRTL's signature checker
     try:
-        checker = sigChecker(isa_sig, rtl_sig_path, debug=debug, minimizing=False)
+        checker = sigChecker(isa_sig, rtl_sig_path, debug=debug, minimizing=False, isa_width=isa_width)
         match = checker.check(wrapped_symbols)
 
         if match:

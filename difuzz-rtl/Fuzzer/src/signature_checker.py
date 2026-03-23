@@ -3,12 +3,13 @@ import os
 from riscv_definitions import *
 
 class sigChecker():
-    def __init__(self, isa_sigfile, rtl_sigfile, debug=False, minimizing=False):
+    def __init__(self, isa_sigfile, rtl_sigfile, debug=False, minimizing=False, isa_width=None):
         self.isa_sigfile = isa_sigfile
         self.rtl_sigfile = rtl_sigfile
 
         self.debug = debug
         self.minimizing = minimizing
+        self.isa_width = isa_width  # 'rv32' or 'rv64' - explicit ISA width from ELF metadata
 
         # CSR/PMP comparison policy:
         # - Skip CSRs that have known ISA vs RTL differences (PMP, exception handling)
@@ -36,18 +37,27 @@ class sigChecker():
         For RV32: SD is at bit 31 (mask: 0x7FFFFFFF)
         For RV64: SD is at bit 63 (mask: 0x7FFFFFFFFFFFFFFF)
 
+        Uses explicit ISA width from ELF metadata if available, otherwise falls back
+        to value-based detection for backward compatibility.
+
         Returns (normalized_isa_val, normalized_rtl_val)
         """
-        # Determine if this is RV64 by checking if either value has bit 63 set
-        # or if the value is > 32 bits (beyond 0xFFFFFFFF)
-        max_val = max(isa_val, rtl_val)
-        is_rv64 = max_val > 0xFFFFFFFF or (max_val >> 63) & 1
+        # Use explicit ISA width if provided
+        if self.isa_width == 'rv64':
+            is_rv64 = True
+        elif self.isa_width == 'rv32':
+            is_rv64 = False
+        else:
+            # Fallback to value-based detection for backward compatibility
+            # This path is taken when isa_width is not explicitly provided
+            max_val = max(isa_val, rtl_val)
+            is_rv64 = max_val > 0xFFFFFFFF or (max_val >> 63) & 1
 
         if is_rv64:
-            # RV64: clear bit 63
+            # RV64: clear bit 63 (SD bit position)
             mask = 0x7FFFFFFFFFFFFFFF
         else:
-            # RV32: clear bit 31
+            # RV32: clear bit 31 (SD bit position)
             mask = 0x7FFFFFFF
 
         return (isa_val & mask, rtl_val & mask)
