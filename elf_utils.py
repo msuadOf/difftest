@@ -607,6 +607,83 @@ def get_data_sections_info(elf_path):
     return data_sections
 
 
+def get_bss_sections_info(elf_path):
+    """
+    Get information about BSS sections (.bss, .sbss, etc.) from an ELF file.
+
+    Returns a list of tuples (name, address, size) for each BSS section.
+
+    Args:
+        elf_path: Path to the ELF file
+
+    Returns:
+        List of (name, address, size) tuples, sorted by address
+    """
+    result = subprocess.run(
+        ['riscv64-unknown-elf-readelf', '-S', elf_path],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        result = subprocess.run(
+            ['readelf', '-S', elf_path],
+            capture_output=True, text=True
+        )
+
+    if result.returncode != 0:
+        return []
+
+    bss_sections = []
+
+    for line in result.stdout.split('\n'):
+        # Check for BSS sections: .bss*, .sbss*, etc.
+        # These sections contain zero-initialized data and take up space in the ELF
+        if 'NOBITS' in line:  # BSS sections use NOBITS instead of PROGBITS
+            parts = line.split()
+            if len(parts) >= 6:
+                try:
+                    # Parse the section header format
+                    # Skip '[' and 'N]' tokens to find the section name
+                    idx = 0
+                    while idx < len(parts) and (parts[idx] == '[' or parts[idx].endswith(']')):
+                        idx += 1
+
+                    if idx >= len(parts):
+                        continue
+
+                    section_name = parts[idx]
+
+                    # Check if section name starts with BSS prefixes
+                    is_bss_section = (
+                        section_name.startswith('.bss') or
+                        section_name.startswith('.sbss')
+                    )
+
+                    if is_bss_section:
+                        # Find NOBITS type column to get address and size offsets
+                        addr_idx = None
+                        size_idx = None
+                        for i, p in enumerate(parts):
+                            if p == 'NOBITS':
+                                if i + 1 < len(parts):
+                                    addr_idx = i + 1
+                                if i + 3 < len(parts):
+                                    size_idx = i + 3
+                                break
+
+                        if addr_idx is not None and size_idx is not None:
+                            addr = int(parts[addr_idx], 16)
+                            size = int(parts[size_idx], 16)
+                            if size > 0:  # Only include non-empty sections
+                                bss_sections.append((section_name, addr, size))
+                except (ValueError, IndexError):
+                    continue
+
+    # Sort by address
+    bss_sections.sort(key=lambda x: x[1])
+    return bss_sections
+
+
 def detect_isa_from_binary(bin_path):
     """
     Detect ISA width (RV32 vs RV64) from a raw binary file.

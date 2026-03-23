@@ -17,7 +17,7 @@ import os
 import sys
 import tempfile
 
-from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, resolve_bin_to_elf, get_spike_memory_map, get_data_sections_info
+from elf_utils import get_symbols, has_signature_symbols, get_elf_isa_width, resolve_bin_to_elf, get_spike_memory_map, get_data_sections_info, get_bss_sections_info
 from elf_wrapper import wrap_elf_for_difftest
 from spike_runner import run_spike, find_spike
 
@@ -129,6 +129,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         wrapped_elf = elf_path
         wrapped_hex = elf_path.replace('.elf', '.hex')
         wrapped_symbols = symbols
+        is_wrapped = False  # This is a direct (pre-instrumented) ELF, not wrapped by us
 
         # Generate hex file if it doesn't exist
         if not os.path.isfile(wrapped_hex):
@@ -151,11 +152,13 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         # Check if ELF has data sections before wrapping
         # Wrapping changes the memory layout, which breaks PC-relative references
         data_sections = get_data_sections_info(elf_path)
-        if data_sections:
+        bss_sections = get_bss_sections_info(elf_path)
+
+        if data_sections or bss_sections:
             result['status'] = 'UNSUPPORTED'
-            data_info = ', '.join([f'{name}@0x{addr:x}' for name, addr, size in data_sections])
+            sections_info = ', '.join([f'{name}@0x{addr:x}' for name, addr, size in data_sections + bss_sections])
             result['details'] = (
-                f'ELF has data sections ({data_info}) but lacks signature symbols. '
+                f'ELF has data/BSS sections ({sections_info}) but lacks signature symbols. '
                 f'Wrapping would change the memory layout and break PC-relative references. '
                 f'Please use an ELF that already includes the DifuzzRTL signature infrastructure.'
             )
@@ -169,6 +172,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
             wrapped_elf = wrap_result['elf']
             wrapped_hex = wrap_result['hex']
             wrapped_symbols = wrap_result['symbols']
+            is_wrapped = True  # This is a wrapped ELF
             if debug:
                 print(f'[Difftest] Wrapped ELF: {wrapped_elf}')
         except Exception as e:
@@ -349,7 +353,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
     # Use DifuzzRTL's signature checker
     try:
-        checker = sigChecker(isa_sig, rtl_sig_path, debug=debug, minimizing=False, isa_width=isa_width)
+        checker = sigChecker(isa_sig, rtl_sig_path, debug=debug, minimizing=False, isa_width=isa_width, wrapped_elf=is_wrapped)
         match = checker.check(wrapped_symbols)
 
         if match:

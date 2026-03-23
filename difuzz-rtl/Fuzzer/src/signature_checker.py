@@ -3,13 +3,14 @@ import os
 from riscv_definitions import *
 
 class sigChecker():
-    def __init__(self, isa_sigfile, rtl_sigfile, debug=False, minimizing=False, isa_width=None):
+    def __init__(self, isa_sigfile, rtl_sigfile, debug=False, minimizing=False, isa_width=None, wrapped_elf=False):
         self.isa_sigfile = isa_sigfile
         self.rtl_sigfile = rtl_sigfile
 
         self.debug = debug
         self.minimizing = minimizing
         self.isa_width = isa_width  # 'rv32' or 'rv64' - explicit ISA width from ELF metadata
+        self.wrapped_elf = wrapped_elf  # True if this is a wrapped ELF (not a pre-instrumented direct ELF)
 
         # CSR/PMP comparison policy:
         # - Skip CSRs that have known ISA vs RTL differences (PMP)
@@ -229,16 +230,18 @@ class sigChecker():
                 match = (isa_val == rtl_val)
 
                 # Special handling for exception CSRs (mcause, mepc, mtval):
-                # For wrapped programs, Spike and RTL handle the ecall exit mechanism
-                # differently, leading to consistent differences in these CSRs even when
-                # the program executes correctly. These differences are not bugs but
-                # expected behavior due to different trap handling implementations.
-                # Therefore, we skip comparing these CSRs entirely for wrapped programs.
-                if csr_name in ['mcause', 'mepc', 'mtval']:
-                    # Skip exception CSR comparison for wrapped programs
-                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: exit mechanism difference)'. \
+                # For wrapped programs: Skip comparison due to ecall exit mechanism differences
+                # For direct (pre-instrumented) ELFs: Compare normally to detect trap/exception bugs
+                if csr_name in ['mcause', 'mepc', 'mtval'] and self.wrapped_elf:
+                    # Wrapped programs: Skip exception CSR comparison
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: wrapped ELF exit mechanism)'. \
                                      format(csr_name, isa_val, rtl_val), False)
                     continue
+                elif csr_name in ['mcause', 'mepc', 'mtval'] and not self.wrapped_elf:
+                    # Direct ELFs: Compare exception CSRs normally to detect trap/exception bugs
+                    if not match: csr_match = False
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                     format(csr_name, isa_val, rtl_val), not match)
                 else:
                     if not match: csr_match = False
                     self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
