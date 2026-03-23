@@ -16,3 +16,7 @@ __pycache__/
 # DifuzzRTL build artifacts
 difuzz-rtl/Fuzzer/results.xml
 difuzz-rtl/Fuzzer/sim_build/
+
+# Compiled binaries (regeneratable from source)
+*.elf
+*.bin
