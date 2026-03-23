@@ -557,9 +557,22 @@ def get_data_sections_info(elf_path):
             parts = line.split()
             if len(parts) >= 6:
                 try:
-                    # Find the name column (usually after the index)
+                    # Parse the section header format
                     # Format: [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
-                    section_name = parts[1] if len(parts) > 1 else ''
+                    # Example: [ 2] .data PROGBITS 00001450 001450 0002f0 00 WA  0   0 16
+                    # After split(): ['[', '2]', '.data', 'PROGBITS', '00001450', '001450', '0002f0', ...]
+                    # The first token is '[' and the second is 'N]' (index number with bracket)
+                    # The actual section name comes after the index tokens
+
+                    # Skip initial '[' and 'N]' tokens
+                    idx = 0
+                    while idx < len(parts) and (parts[idx] == '[' or parts[idx].endswith(']')):
+                        idx += 1
+
+                    if idx >= len(parts):
+                        continue
+
+                    section_name = parts[idx]
 
                     # Check if section name starts with data section prefixes
                     is_data_section = (
@@ -570,12 +583,11 @@ def get_data_sections_info(elf_path):
                     )
 
                     if is_data_section:
-                        # Find address and size columns
-                        # Addr is after PROGBITS, Size is two fields after Addr
+                        # Find PROGBITS type column to get address and size offsets
                         addr_idx = None
                         size_idx = None
                         for i, p in enumerate(parts):
-                            if 'PROGBITS' in p:
+                            if p == 'PROGBITS':
                                 if i + 1 < len(parts):
                                     addr_idx = i + 1
                                 if i + 3 < len(parts):
