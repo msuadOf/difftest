@@ -816,8 +816,11 @@ def get_spike_memory_map(elf_path, symbols=None):
     for vaddr, memsz in load_segments:
         # Align base down to 4 KiB
         base = vaddr & ~0xFFF
-        # Align size up to 4 KiB
-        size = ((memsz + 0xFFF) & ~0xFFF)
+        # Calculate region size based on aligned segment end address
+        # For vaddr=0x1004, memsz=0x1000: end=0x2004, aligned_end=0x3000, size=0x2000
+        end = vaddr + memsz
+        aligned_end = (end + 0xFFF) & ~0xFFF
+        size = aligned_end - base
 
         # Check if this region is at DRAM_BASE or below
         if base >= DRAM_BASE:
