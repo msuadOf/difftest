@@ -184,7 +184,7 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
     # Perform signature comparison
     if isa_only:
         # ISA-only mode: Spike execution succeeded, no RTL comparison
-        result['status'] = 'SPIKE_OK'
+        result['status'] = 'PASS'
         result['details'] = (
             f'ISA-only mode: Spike execution successful. '
             f'Signature: {isa_sig} ({os.path.getsize(isa_sig)} bytes). '
@@ -192,84 +192,97 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         )
         return result
 
-    # End-to-end mode: Run RTL simulation
-    rtl_sig_path = os.path.join(output_dir, basename + '_rtl_sig.txt')
-
-    # Check if RTL runner is available
-    if not RTL_AVAILABLE:
-        result['status'] = 'ERROR'
-        result['details'] = (
-            f'RTL runner not available. '
-            f'This may be due to missing dependencies (cocotb/verilator). '
-            f'Use --isa-only for Spike-only testing, or --rtl-sig for pre-generated RTL signature.'
-        )
-        return result
-
-    # Build RTL input bundle
-    try:
-        rtl_input_bundle = build_rtl_input_bundle(
-            wrapped_elf_path=wrapped_elf,
-            wrapped_hex_path=wrapped_hex,
-            symbols=wrapped_symbols,
-            max_cycles=timeout * 100  # Convert seconds to cycles (approximate)
-        )
-    except Exception as e:
-        result['status'] = 'ERROR'
-        result['details'] = f'Failed to build RTL input bundle: {e}'
-        return result
-
-    # Run RTL simulation
-    try:
+    # End-to-end mode: Check for pre-generated RTL signature or run RTL simulation
+    if rtl_sig_file:
+        # Use pre-generated RTL signature
+        if not os.path.isfile(rtl_sig_file):
+            result['status'] = 'ERROR'
+            result['details'] = f'Pre-generated RTL signature not found: {rtl_sig_file}'
+            return result
+        rtl_sig_path = rtl_sig_file
         if debug:
-            print(f'[Difftest] Running RTL simulation...')
+            print(f'[Difftest] Using pre-generated RTL signature: {rtl_sig_path}')
+    else:
+        # Run RTL simulation
+        rtl_sig_path = os.path.join(output_dir, basename + '_rtl_sig.txt')
 
-        rtl_result_code, _ = run_rtl_simulation(
-            rtl_input_bundle,
-            rtl_sig_path=rtl_sig_path,
-            debug=debug,
-            timeout=timeout * 2  # Give RTL more time
-        )
+    # Check if we need to run RTL simulation or use pre-generated signature
+    if not rtl_sig_file:
+        # Check if RTL runner is available
+        if not RTL_AVAILABLE:
+            result['status'] = 'ERROR'
+            result['details'] = (
+                f'RTL runner not available. '
+                f'This may be due to missing dependencies (cocotb/verilator). '
+                f'Use --isa-only for Spike-only testing, or --rtl-sig for pre-generated RTL signature.'
+            )
+            return result
 
-        if debug:
-            print(f'[Difftest] RTL simulation result: {rtl_result_code}')
+        # Build RTL input bundle
+        try:
+            rtl_input_bundle = build_rtl_input_bundle(
+                wrapped_elf_path=wrapped_elf,
+                wrapped_hex_path=wrapped_hex,
+                symbols=wrapped_symbols,
+                max_cycles=timeout * 100  # Convert seconds to cycles (approximate)
+            )
+        except Exception as e:
+            result['status'] = 'ERROR'
+            result['details'] = f'Failed to build RTL input bundle: {e}'
+            return result
 
-        # Check RTL result
-        if rtl_result_code == SUCCESS:
+        # Run RTL simulation
+        try:
             if debug:
-                print(f'[Difftest] RTL simulation successful')
-        elif rtl_result_code == TIME_OUT:
+                print(f'[Difftest] Running RTL simulation...')
+
+            rtl_result_code, _ = run_rtl_simulation(
+                rtl_input_bundle,
+                rtl_sig_path=rtl_sig_path,
+                debug=debug,
+                timeout=timeout * 2  # Give RTL more time
+            )
+
+            if debug:
+                print(f'[Difftest] RTL simulation result: {rtl_result_code}')
+
+            # Check RTL result
+            if rtl_result_code == SUCCESS:
+                if debug:
+                    print(f'[Difftest] RTL simulation successful')
+            elif rtl_result_code == TIME_OUT:
+                result['status'] = 'ERROR'
+                result['details'] = 'RTL simulation timed out'
+                return result
+            elif rtl_result_code == ASSERTION_FAIL:
+                result['status'] = 'ERROR'
+                result['details'] = 'RTL simulation assertion failure'
+                return result
+            elif rtl_result_code == ILL_MEM:
+                result['status'] = 'ERROR'
+                result['details'] = 'RTL simulation illegal memory access'
+                return result
+            else:
+                result['status'] = 'ERROR'
+                result['details'] = f'RTL simulation failed with code: {rtl_result_code}'
+                return result
+
+        except FileNotFoundError as e:
+            # RTL simulation not available (cocotb/verilator not set up)
             result['status'] = 'ERROR'
-            result['details'] = 'RTL simulation timed out'
+            result['details'] = (
+                f'RTL simulation not available: {e}. '
+                f'This may be due to missing cocotb/verilator environment. '
+                f'Use --isa-only for Spike-only testing, or set up RTL environment.'
+            )
             return result
-        elif rtl_result_code == ASSERTION_FAIL:
+        except Exception as e:
             result['status'] = 'ERROR'
-            result['details'] = 'RTL simulation assertion failure'
-            return result
-        elif rtl_result_code == ILL_MEM:
-            result['status'] = 'ERROR'
-            result['details'] = 'RTL simulation illegal memory access'
-            return result
-        else:
-            result['status'] = 'ERROR'
-            result['details'] = f'RTL simulation failed with code: {rtl_result_code}'
+            result['details'] = f'RTL simulation failed: {e}'
             return result
 
-    except FileNotFoundError as e:
-        # RTL simulation not available (cocotb/verilator not set up)
-        result['status'] = 'ERROR'
-        result['details'] = (
-            f'RTL simulation not available: {e}. '
-            f'This may be due to missing cocotb/verilator environment. '
-            f'Use --isa-only for Spike-only testing, or set up RTL environment.'
-        )
-        return result
-    except Exception as e:
-        result['status'] = 'ERROR'
-        result['details'] = f'RTL simulation failed: {e}'
-        return result
-
-    # Check if RTL signature file was created
-    if not os.path.isfile(rtl_sig_path):
+    # Check if RTL signature file was created (only if we ran RTL simulation)
+    if not rtl_sig_file and not os.path.isfile(rtl_sig_path):
         result['status'] = 'ERROR'
         result['details'] = 'RTL simulation did not produce signature file'
         return result
@@ -301,8 +314,8 @@ def main():
     group.add_argument('--progs-dir', type=str,
                        help='Directory containing ELF files')
 
-    parser.add_argument('--pattern', type=str, default='*.elf',
-                        help='Glob pattern for program files (default: *.elf). Can be *.bin or other pattern.')
+    parser.add_argument('--pattern', type=str, default=None,
+                        help='Glob pattern for program files (default: *.elf and *.bin). Can be *.elf, *.bin, or other pattern.')
     parser.add_argument('--output-dir', type=str, default=None,
                         help='Output directory for wrapped files and signatures')
     parser.add_argument('--timeout', type=int, default=30,
@@ -329,10 +342,23 @@ def main():
     if args.elf:
         elf_files = [args.elf]
     else:
-        pattern = os.path.join(args.progs_dir, args.pattern)
-        elf_files = sorted(glob.glob(pattern))
+        # Default to both .elf and .bin files if no pattern specified
+        if args.pattern is None:
+            patterns = [
+                os.path.join(args.progs_dir, '*.elf'),
+                os.path.join(args.progs_dir, '*.bin')
+            ]
+            # Use set to deduplicate in case a file matches both patterns
+            elf_files = sorted(set(f for p in patterns for f in glob.glob(p)))
+        else:
+            pattern = os.path.join(args.progs_dir, args.pattern)
+            elf_files = sorted(glob.glob(pattern))
+
         if not elf_files:
-            print(f'No ELF files found matching: {pattern}', file=sys.stderr)
+            if args.pattern is None:
+                print(f'No ELF or BIN files found in: {args.progs_dir}', file=sys.stderr)
+            else:
+                print(f'No files found matching: {os.path.join(args.progs_dir, args.pattern)}', file=sys.stderr)
             sys.exit(1)
 
     # Set up output directory

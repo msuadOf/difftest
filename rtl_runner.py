@@ -68,7 +68,6 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
     config = {
         'hexfile': os.path.abspath(rtl_input.hexfile),
         'intrfile': os.path.abspath(rtl_input.intrfile) if rtl_input.intrfile else None,
-        'rtl_sig_file': os.path.abspath(rtl_sig_path),
         'data': rtl_input.data,
         'symbols': {k: v for k, v in rtl_input.symbols.items()},
         'max_cycles': rtl_input.max_cycles,
@@ -83,6 +82,7 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
         env = os.environ.copy()
         env['PYTHONPATH'] = f"{fuzzer_dir}/src:{fuzzer_dir}/RTLSim/src:{env.get('PYTHONPATH', '')}"
         env['RTL_CONFIG_FILE'] = config_path
+        env['RTL_SIG_FILE'] = os.path.abspath(rtl_sig_path)
         env['TOPLEVEL_LANG'] = 'verilog'
 
         # Build the make command to run the single program test
@@ -91,7 +91,7 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
             '-C', fuzzer_dir,
             'SIM=verilator',
             f'VFILE={vfile.split()[1] if " " in vfile else vfile}',
-            'TESTCASE=single_program_test',
+            'MODULE=single_program_test',
         ]
 
         if debug:
@@ -120,12 +120,17 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='E RocketTile_VHarness',
         # Check if the RTL signature file was created
         if not os.path.isfile(rtl_sig_path):
             # Simulation failed to produce signature
+            # Make/build failures should be ASSERTION_FAIL, not TIME_OUT
+            # Only subprocess.TimeoutExpired should return TIME_OUT
             if result.returncode == 0:
-                return (TIME_OUT, 0)
-            return (result.returncode or ASSERTION_FAIL, 0)
+                # Make succeeded but no signature file - this is unexpected
+                return (ASSERTION_FAIL, 0)
+            # Make failed with non-zero exit code
+            return (ASSERTION_FAIL, result.returncode)
 
-        # Return the actual result code
-        return (result.returncode or SUCCESS, 0)
+        # Return the actual result code from the simulation
+        # The test exits with the result code, so returncode is the simulation result
+        return (result.returncode, 0)
 
     except subprocess.TimeoutExpired:
         return (TIME_OUT, 0)

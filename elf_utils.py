@@ -363,50 +363,73 @@ def detect_isa_from_binary(bin_path):
     """
     Detect ISA width (RV32 vs RV64) from a raw binary file.
 
-    This function looks for instruction patterns that are specific to RV32 vs RV64.
-    It's a heuristic approach that works for most cases.
+    WARNING: This function uses a heuristic approach and may not be reliable
+    for all binaries. For standalone .bin files, it is strongly recommended
+    to provide an explicit ISA width hint via --isa-width parameter.
 
     Args:
         bin_path: Path to the .bin file
 
     Returns:
         'rv32' if the binary appears to be RV32, 'rv64' if RV64 or unknown
+
+    Note:
+        For reliable ISA detection, use the ELF file instead of .bin format,
+        or explicitly specify the ISA width when calling resolve_bin_to_elf().
     """
     try:
+        # Get actual file size, not just the read buffer size
+        file_size = os.path.getsize(bin_path)
+
+        # Read a larger sample to inspect instruction patterns
         with open(bin_path, 'rb') as f:
-            # Read first 1KB of the binary
-            data = f.read(1024)
+            # Read up to 8KB to get a better sample
+            data = f.read(8192)
 
         if len(data) < 4:
-            return 'rv64'  # Default to rv64 for very small binaries
+            # Too small to analyze, default to rv64
+            return 'rv64'
 
-        # Look for RV32-specific instructions (32-bit only)
-        # RV32 has many instructions that RV64 doesn't have in the same form
-        # For simplicity, we'll check if all instructions fit in 16-bit alignment
-        # This is a heuristic - not perfect but works for most cases
-
-        # Count instructions that are 32-bit aligned (typical for RV32)
-        aligned_instructions = 0
-        total_instructions = 0
+        # Heuristic 1: Check for RV64-specific instructions
+        # Look for instructions that only exist in RV64:
+        # - LWU (load word unsigned): 0x00002003 (base pattern)
+        # - LD (load double): 0x00003003 (base pattern)
+        # - SD (store double): 0x00003023 (base pattern)
+        # These are simplified patterns - real detection needs disassembly
+        rv64_hint_count = 0
+        total_nonzero = 0
 
         for i in range(0, len(data) - 3, 4):
-            # Get instruction word
             instr = int.from_bytes(data[i:i+4], byteorder='little')
+            if instr != 0:
+                total_nonzero += 1
+                # Check for potential RV64 load/store patterns
+                # These are very basic heuristics
+                opcode = instr & 0x7F
+                # RV64 has additional load/store opcodes
+                if opcode in [0x03, 0x23]:  # Load/Store base
+                    # Check for width fields that suggest 64-bit
+                    funct3 = (instr >> 12) & 0x7
+                    if funct3 in [0x3, 0x4]:  # Double-word load/store hints
+                        rv64_hint_count += 1
 
-            # Check if it looks like a valid RISC-V instruction
-            # (this is a rough heuristic)
-            if instr != 0:  # Skip zeros
-                total_instructions += 1
-                # Check for RV32-specific patterns
-                # This is very simplified - real detection would need proper disassembly
-                pass
+        # Heuristic 2: Use file size as a weak indicator
+        # (this is NOT reliable, just a fallback)
+        # Smaller test programs might be RV32, larger ones might be RV64
+        # But this is easily wrong, so we weight it less
 
-        # For now, we'll default to rv32 for small binaries and rv64 for larger ones
-        # This is a pragmatic choice that can be overridden with explicit --isa-width
-        if len(data) < 4096:  # < 4KB
-            return 'rv32'  # Small binaries are typically RV32
+        # Decision: if we see clear RV64 hints, use rv64
+        if total_nonzero > 0 and rv64_hint_count / total_nonzero > 0.05:
+            return 'rv64'
+
+        # Otherwise, use file size as a weak hint (but this is unreliable)
+        # Default to rv64 for ambiguity since it's more common in modern systems
+        if file_size > 16384:  # > 16KB suggests larger code, maybe RV64
+            return 'rv64'
         else:
-            return 'rv64'  # Larger binaries are typically RV64
+            # For smaller binaries, we can't reliably determine
+            # Default to rv64 as the safer choice
+            return 'rv64'
 
     except Exception:
         return 'rv64'  # Default on error

@@ -1,8 +1,28 @@
 import sys
 import cocotb
 
-from cocotb.decorators import coroutine
+# Compatibility layer for different cocotb versions
+try:
+    from cocotb.decorators import coroutine
+    HAS_OLD_COROUTINE = True
+except ImportError:
+    # cocotb 2.0+ removed @coroutine decorator
+    # Define a no-op decorator for async functions
+    def coroutine(func):
+        """No-op decorator for modern cocotb async functions."""
+        return func
+    HAS_OLD_COROUTINE = False
+
 from cocotb.triggers import Timer, RisingEdge
+
+# Compatibility for cocotb.fork() vs cocotb.start_soon()
+def cocotb_start(func):
+    """Compatibility wrapper for starting coroutines across cocotb versions."""
+    try:
+        return cocotb.start_soon(func)
+    except AttributeError:
+        # cocotb < 2.0
+        return cocotb.fork(func)
 from reader.tile_reader import tileSrcReader
 from adapters.tile_adapter import tileAdapter
 
@@ -69,25 +89,23 @@ class rvRTLhost():
 
         return (bootrom_addrs, memory)
 
-    @coroutine
-    def clock_gen(self, clock, period=2):
+    async def clock_gen(self, clock, period=2):
         while True:
             clock <= 1
-            yield Timer(period / 2)
+            await Timer(period / 2)
             clock <= 0
-            yield Timer(period / 2)
+            await Timer(period / 2)
 
-    @coroutine
-    def reset(self, clock, metaReset, reset, timer=5):
+    async def reset(self, clock, metaReset, reset, timer=5):
         clkedge = RisingEdge(clock)
 
         metaReset <= 1
         for i in range(timer):
-            yield clkedge
+            await clkedge
         metaReset <= 0
         reset <= 1
         for i in range(timer):
-            yield clkedge
+            await clkedge
         reset <= 0
 
     def save_signature(self, memory, sig_start, sig_end, data_addrs, sig_file):
@@ -107,8 +125,7 @@ class rvRTLhost():
         cov_mask = (1 << len(self.dut.io_covSum)) - 1
         return self.dut.io_covSum.value & cov_mask
 
-    @coroutine
-    def run_test(self, rtl_input: rtlInput, assert_intr: bool):
+    async def run_test(self, rtl_input: rtlInput, assert_intr: bool):
 
         self.debug_print('[RTLHost] Start RTL simulation')
 
@@ -158,14 +175,14 @@ class rvRTLhost():
                 ints[int(pair[0], 16)] = int(pair[1], 2)
 
         clk = self.dut.clock
-        clk_driver = cocotb.fork(self.clock_gen(clk))
+        clk_driver = cocotb_start(self.clock_gen(clk))
         clkedge = RisingEdge(clk)
 
-        yield self.reset(clk, self.dut.metaReset, self.dut.reset)
+        await self.reset(clk, self.dut.metaReset, self.dut.reset)
 
         self.adapter.start(memory, ints)
         for i in range(max_cycles):
-            yield clkedge
+            await clkedge
 
             if i % 100 == 0:
                 tohost = memory[tohost_addr]
@@ -174,7 +191,7 @@ class rvRTLhost():
                 else:
                     self.adapter.probe_tohost(tohost_addr)
 
-        yield self.adapter.stop()
+        await self.adapter.stop()
         clk_driver.kill()
 
         # Check all the CPU's memory access operations occurs in DRAM

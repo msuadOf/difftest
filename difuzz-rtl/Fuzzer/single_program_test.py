@@ -78,7 +78,7 @@ def get_rtl_input_from_env():
 
 
 @cocotb.test()
-async def run_single_program_test(dut):
+async def test(dut):
     """
     Run a single program RTL test.
 
