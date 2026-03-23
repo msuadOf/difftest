@@ -12,3 +12,7 @@ __pycache__/
 # Test outputs
 /tmp/test_difftest*
 /tmp/final_test
+
+# DifuzzRTL build artifacts
+difuzz-rtl/Fuzzer/results.xml
+difuzz-rtl/Fuzzer/sim_build/
