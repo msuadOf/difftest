@@ -457,17 +457,21 @@ def get_elf_isa_width(elf_path):
 
 def get_text_section_end(elf_path):
     """
-    Get the actual end address of the .text section from an ELF file.
+    Get the actual end address of ALL .text* sections from an ELF file.
 
-    This uses readelf to parse the section headers and find the .text section's
-    address and size. Returns the exact end address (vaddr + size) without any
-    padding or alignment assumptions.
+    This uses readelf to parse the section headers and find ALL sections whose
+    names start with '.text' (e.g., .text, .text.init, .text.startup).
+    Returns the maximum end address (max(vaddr + size)) across all text sections.
+
+    This handles multi-section executables where code is split across
+    .text.init, .text, and other .text.* sections.
 
     Args:
         elf_path: Path to the ELF file
 
     Returns:
-        The end address of the .text section (vaddr + size), or None if not found
+        The maximum end address across all .text* sections (vaddr + size),
+        or None if no text sections are found
     """
     result = subprocess.run(
         ['riscv64-unknown-elf-readelf', '-S', elf_path],
@@ -483,15 +487,18 @@ def get_text_section_end(elf_path):
     if result.returncode != 0:
         return None
 
+    max_end = None
+
     for line in result.stdout.split('\n'):
-        if '.text' in line and 'PROGBITS' in line:
+        # Check if this line contains a .text* section
+        # We match sections that start with '.text' and are PROGBITS with ALLOC + EXECUTE flags
+        if '.text' in line and 'PROGBITS' in line and ('AX' in line or 'XA' in line):
             # Format: [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
-            # Example: [ 1] .text PROGBITS 80000000 001000 000142 00 AX 0 0 64
+            # Example: [ 1] .text.init PROGBITS 80000000 001000 00044c 00 AX 0 0 64
             parts = line.split()
             if len(parts) >= 6:
                 try:
                     # Find the address and size columns
-                    # Addr is at index 3, Size at index 5 (after splitting)
                     addr_idx = None
                     size_idx = None
                     for i, p in enumerate(parts):
@@ -506,11 +513,75 @@ def get_text_section_end(elf_path):
                     if addr_idx is not None and size_idx is not None:
                         addr = int(parts[addr_idx], 16)
                         size = int(parts[size_idx], 16)
-                        return addr + size
+                        end = addr + size
+                        if max_end is None or end > max_end:
+                            max_end = end
                 except (ValueError, IndexError):
                     continue
 
-    return None
+    return max_end
+
+
+def get_data_sections_info(elf_path):
+    """
+    Get information about data sections (.data, .rodata, .sdata, etc.) from an ELF file.
+
+    Returns a list of tuples (name, address, size) for each data section.
+
+    Args:
+        elf_path: Path to the ELF file
+
+    Returns:
+        List of (name, address, size) tuples, sorted by address
+    """
+    result = subprocess.run(
+        ['riscv64-unknown-elf-readelf', '-S', elf_path],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        result = subprocess.run(
+            ['readelf', '-S', elf_path],
+            capture_output=True, text=True
+        )
+
+    if result.returncode != 0:
+        return []
+
+    data_sections = []
+
+    for line in result.stdout.split('\n'):
+        # Check for data sections: .data, .rodata, .sdata, .srodata, etc.
+        if any(name in line for name in ['.data', '.rodata', '.sdata', '.srodata']) and 'PROGBITS' in line:
+            parts = line.split()
+            if len(parts) >= 6:
+                try:
+                    # Find the name, address, and size columns
+                    name_idx = None
+                    addr_idx = None
+                    size_idx = None
+                    for i, p in enumerate(parts):
+                        if p in ['.data', '.rodata', '.sdata', '.srodata']:
+                            name_idx = i
+                        if 'PROGBITS' in p:
+                            if i + 1 < len(parts):
+                                addr_idx = i + 1
+                            if i + 3 < len(parts):
+                                size_idx = i + 3
+                            break
+
+                    if name_idx is not None and addr_idx is not None and size_idx is not None:
+                        name = parts[name_idx]
+                        addr = int(parts[addr_idx], 16)
+                        size = int(parts[size_idx], 16)
+                        if size > 0:  # Only include non-empty sections
+                            data_sections.append((name, addr, size))
+                except (ValueError, IndexError):
+                    continue
+
+    # Sort by address
+    data_sections.sort(key=lambda x: x[1])
+    return data_sections
 
 
 def detect_isa_from_binary(bin_path):
