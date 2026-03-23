@@ -8,17 +8,38 @@ try:
     from cocotb.decorators import coroutine
     HAS_OLD_COROUTINE = True
 except ImportError:
-    # cocotb 2.0+ moved @coroutine to cocotb module
-    try:
-        import cocotb
-        coroutine = cocotb.coroutine
-        HAS_OLD_COROUTINE = False
-    except (ImportError, AttributeError):
-        # Last resort: define identity wrapper (will fail if used incorrectly)
-        def coroutine(func):
-            """Identity wrapper - will fail if used incorrectly."""
-            return func
-        HAS_OLD_COROUTINE = False
+    # cocotb 2.0+ removed @coroutine decorator
+    # We need to wrap yield-based generators to make them awaitable
+    import types
+    import inspect
+    HAS_OLD_COROUTINE = False
+
+    def coroutine(func):
+        """
+        Wrapper to convert yield-based generator coroutines to async functions
+        for cocotb 2.x compatibility.
+
+        This wraps generators that yield cocotb triggers (like Timer, RisingEdge)
+        and converts them to async/await style expected by cocotb 2.x.
+        """
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            gen = func(*args, **kwargs)
+            result = None
+            while True:
+                try:
+                    value = gen.send(result)
+                except StopIteration as e:
+                    return e.value
+                # Check if the yielded value is awaitable (cocotb trigger)
+                if inspect.isawaitable(value):
+                    result = await value
+                else:
+                    # For non-awaitable values, just continue
+                    result = value
+            return result
+        return async_wrapper
+    import functools
 from RTLSim.host import ILL_MEM, SUCCESS, TIME_OUT, ASSERTION_FAIL
 from src.word import PREFIX, MAIN, SUFFIX
 

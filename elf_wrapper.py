@@ -79,11 +79,30 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
     symbols = get_symbols(elf_path)
 
     start = symbols.get('_start', DRAM_BASE)
-    end = symbols.get('__bss_start', symbols.get('__bss_end', start + 0x1000))
 
-    # Collect raw bytes
+    # Determine the end of code section more carefully
+    # Use _end_main if available, otherwise __bss_start, otherwise estimate
+    if '_end_main' in symbols:
+        end = symbols['_end_main']
+    elif '__bss_start' in symbols:
+        end = symbols['__bss_start']
+    elif '__bss_end' in symbols:
+        end = symbols['__bss_end']
+    else:
+        # Fallback: find the highest address in memory
+        if memory:
+            end = max(memory.keys()) + 8
+        else:
+            end = start + 0x1000
+
+    # Check if there are data sections we should preserve
+    # We only want to include code in user_code, not data
+    # Look for __bss_start as the boundary between code and data
+    code_end = symbols.get('__bss_start', end)
+
+    # Collect code bytes (up to __bss_start if it exists)
     raw_bytes = bytearray()
-    for addr in range(start, end):
+    for addr in range(start, code_end):
         # Calculate the 8-byte aligned address for this byte
         word_addr = addr & ~0x7  # Clear lowest 3 bits to align to 8 bytes
         if word_addr in memory:

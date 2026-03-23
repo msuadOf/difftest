@@ -336,10 +336,53 @@ def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
 def has_signature_symbols(symbols):
     """
     Check if the ELF has DifuzzRTL signature infrastructure symbols.
-    Returns True if begin_signature, end_signature, tohost, reg_x0_output exist.
+    Returns True only if ALL required symbols exist, not just a partial set.
+
+    This prevents sending partially-instrumented ELFs down the "already wrapped"
+    path, which would cause KeyError later in RTL input/signature parsing.
     """
-    required = ['begin_signature', 'end_signature', 'tohost', 'reg_x0_output']
-    return all(sym in symbols for sym in required)
+    # Core signature symbols
+    required_core = ['begin_signature', 'end_signature', 'tohost']
+
+    # GPR output symbols (all 32)
+    required_gprs = [f'reg_x{i}_output' for i in range(32)]
+
+    # FPR output symbols (all 32)
+    required_fprs = [f'reg_f{i}_output' for i in range(32)]
+
+    # CSR output symbols (all CSR names used by sigChecker)
+    csr_names = [
+        'fflags', 'frm', 'fcsr', 'sstatus', 'sie', 'sscratch', 'sepc', 'scause',
+        'stval', 'sip', 'satp', 'mhartid', 'mstatus', 'medeleg', 'mie', 'mscratch',
+        'mepc', 'mcause', 'mtval', 'mip', 'pmpcfg0', 'pmpaddr0', 'pmpaddr1',
+        'pmpaddr2', 'pmpaddr3', 'pmpaddr4', 'pmpaddr5', 'pmpaddr6', 'pmpaddr7'
+    ]
+    required_csrs = [f'{name}_output' for name in csr_names]
+
+    # Random data sections
+    required_data = [f'_random_data{i}' for i in range(6)]
+    required_data_end = [f'_end_data{i}' for i in range(6)]
+
+    # End marker (used by sigChecker.read_symbols)
+    required_end = ['_end_main']
+
+    # Combine all required symbols
+    all_required = (required_core + required_gprs + required_fprs +
+                     required_csrs + required_data + required_data_end + required_end)
+
+    # Check if all required symbols exist
+    missing = [sym for sym in all_required if sym not in symbols]
+    if missing:
+        # Don't print all missing symbols in production, just return False
+        # But for debugging, we can log what's missing
+        import sys
+        if '--debug' in sys.argv or any(sym in symbols for sym in required_core[:3]):
+            # Only show missing if we already have some signature symbols
+            # (partial instrumentation case)
+            pass  # Could log: f"Missing signature symbols: {missing[:5]}...")
+        return False
+
+    return True
 
 
 def get_elf_end_addr(symbols, memory):

@@ -181,6 +181,10 @@ class sigChecker():
         csr_match = True
         data_match = True
 
+        # Get mcause values to determine if exception occurred
+        isa_mcause = isa_csr_vals.get('mcause', 0)
+        rtl_mcause = rtl_csr_vals.get('mcause', 0)
+
         for (i, val) in enumerate(zip(isa_xreg_vals, rtl_xreg_vals)):
             match = (val[0] == val[1])
             if not match: xreg_match = False
@@ -225,21 +229,20 @@ class sigChecker():
                 match = (isa_val == rtl_val)
 
                 # Special handling for exception CSRs (mcause, mepc, mtval):
-                # If GPR and FPR all match but only these CSRs differ, it's likely
-                # due to known ecall exit differences between Spike and RTL.
-                # Only report mismatch if there are other architectural differences.
+                # If both ISA and RTL report mcause == 0 (no exception), differences in
+                # exception CSRs are likely due to known ecall exit mechanism differences
+                # between Spike and RTL. Skip these to avoid false positives.
+                # If mcause != 0 in either, exception CSR differences indicate real bugs.
                 if csr_name in ['mcause', 'mepc', 'mtval'] and not match:
-                    if xreg_match and freg_match:
-                        # GPR and FPR all match - this is likely an ecall exit
-                        # Don't let exception CSR differences cause a mismatch
-                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: ecall exit diff)'. \
+                    if isa_mcause == 0 and rtl_mcause == 0:
+                        # Both report no exception - skip these CSR differences
+                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: no exception)'. \
                                          format(csr_name, isa_val, rtl_val), False)
                         continue
-                    else:
-                        # There are other differences - exception CSRs are important
-                        if not match: csr_match = False
-                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                                         format(csr_name, isa_val, rtl_val), not match)
+                    # Otherwise, exception CSR differences are important
+                    if not match: csr_match = False
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                     format(csr_name, isa_val, rtl_val), not match)
                 else:
                     if not match: csr_match = False
                     self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
