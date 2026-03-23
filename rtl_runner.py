@@ -135,6 +135,18 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
         rtl_result_path = env.get('RTL_RESULT_FILE')
         actual_result = ASSERTION_FAIL  # Default to assertion fail if we can't determine result
 
+        # IMPORTANT: Only read rtl_result.txt if make succeeded
+        # If make failed, any existing rtl_result.txt is stale from a previous run
+        if result.returncode != 0:
+            # Make failed - don't trust any stale rtl_result.txt
+            if debug:
+                print(f'[RTL Runner] Make failed with exit code {result.returncode}, ignoring stale result file')
+            return (ASSERTION_FAIL, {
+                'make_exit_code': result.returncode,
+                'stdout_tail': stdout_tail,
+                'stderr_tail': stderr_tail or 'Make failed'
+            })
+
         if os.path.isfile(rtl_result_path):
             try:
                 with open(rtl_result_path, 'r') as f:

@@ -551,31 +551,42 @@ def get_data_sections_info(elf_path):
     data_sections = []
 
     for line in result.stdout.split('\n'):
-        # Check for data sections: .data, .rodata, .sdata, .srodata, etc.
-        if any(name in line for name in ['.data', '.rodata', '.sdata', '.srodata']) and 'PROGBITS' in line:
+        # Check for data sections: .data*, .rodata*, .sdata*, .srodata*, etc.
+        # Match sections that START with these prefixes (e.g., .rodata.str1.1)
+        if 'PROGBITS' in line:
             parts = line.split()
             if len(parts) >= 6:
                 try:
-                    # Find the name, address, and size columns
-                    name_idx = None
-                    addr_idx = None
-                    size_idx = None
-                    for i, p in enumerate(parts):
-                        if p in ['.data', '.rodata', '.sdata', '.srodata']:
-                            name_idx = i
-                        if 'PROGBITS' in p:
-                            if i + 1 < len(parts):
-                                addr_idx = i + 1
-                            if i + 3 < len(parts):
-                                size_idx = i + 3
-                            break
+                    # Find the name column (usually after the index)
+                    # Format: [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
+                    section_name = parts[1] if len(parts) > 1 else ''
 
-                    if name_idx is not None and addr_idx is not None and size_idx is not None:
-                        name = parts[name_idx]
-                        addr = int(parts[addr_idx], 16)
-                        size = int(parts[size_idx], 16)
-                        if size > 0:  # Only include non-empty sections
-                            data_sections.append((name, addr, size))
+                    # Check if section name starts with data section prefixes
+                    is_data_section = (
+                        section_name.startswith('.data') or
+                        section_name.startswith('.rodata') or
+                        section_name.startswith('.sdata') or
+                        section_name.startswith('.srodata')
+                    )
+
+                    if is_data_section:
+                        # Find address and size columns
+                        # Addr is after PROGBITS, Size is two fields after Addr
+                        addr_idx = None
+                        size_idx = None
+                        for i, p in enumerate(parts):
+                            if 'PROGBITS' in p:
+                                if i + 1 < len(parts):
+                                    addr_idx = i + 1
+                                if i + 3 < len(parts):
+                                    size_idx = i + 3
+                                break
+
+                        if addr_idx is not None and size_idx is not None:
+                            addr = int(parts[addr_idx], 16)
+                            size = int(parts[size_idx], 16)
+                            if size > 0:  # Only include non-empty sections
+                                data_sections.append((section_name, addr, size))
                 except (ValueError, IndexError):
                     continue
 
@@ -763,16 +774,28 @@ def bin_to_elf(bin_path, output_elf_path=None, isa_width=None, entry_addr=DRAM_B
     with tempfile.NamedTemporaryFile(mode='w', suffix='.S', delete=False) as asm_file:
         asm_path = asm_file.name
 
-        # Align binary data to 4 bytes
-        padding = len(binary_data) % 4
-        if padding != 0:
-            binary_data += b'\x00' * (4 - padding)
-
-        # Convert binary data to .word directives
+        # Convert binary data to instruction directives
+        # IMPORTANT: Do NOT pad to 4-byte alignment!
+        # The original binary may end with a 16-bit compressed instruction,
+        # and adding padding would insert extra zeros that get executed.
+        # Use a mix of .word, .2byte, and .byte directives as needed.
         words = []
-        for i in range(0, len(binary_data), 4):
-            word = struct.unpack_from('<I', binary_data, i)[0]
-            words.append(f'    .word 0x{word:08x}')
+        i = 0
+        while i < len(binary_data):
+            if i + 4 <= len(binary_data):
+                # Emit a 4-byte word
+                word = struct.unpack_from('<I', binary_data, i)[0]
+                words.append(f'    .word 0x{word:08x}')
+                i += 4
+            elif i + 2 <= len(binary_data):
+                # Emit a 2-byte halfword (compressed instruction)
+                halfword = struct.unpack_from('<H', binary_data, i)[0]
+                words.append(f'    .2byte 0x{halfword:04x}')
+                i += 2
+            else:
+                # Odd number of bytes - emit as single byte
+                words.append(f'    .byte 0x{binary_data[i]:02x}')
+                i += 1
 
         binary_code = '\n'.join(words)
 
