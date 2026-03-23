@@ -828,17 +828,30 @@ def get_spike_memory_map(elf_path, symbols=None):
             continue
         else:
             # Low-address region - needs explicit mapping
-            # Avoid duplicates by checking if this region overlaps with existing
-            overlaps = False
-            for existing_base, existing_size in regions:
-                existing_end = existing_base + existing_size
-                new_end = base + size
-                if not (new_end <= existing_base or base >= existing_end):
-                    overlaps = True
-                    break
+            # Merge with overlapping regions instead of dropping them
+            new_end = base + size
 
-            if not overlaps:
-                regions.append((base, size))
+            # Find all overlapping regions and merge them all
+            merged_base = base
+            merged_end = new_end
+            indices_to_remove = []
+
+            for i, (existing_base, existing_size) in enumerate(regions):
+                existing_end = existing_base + existing_size
+
+                # Check for overlap: intervals [base, new_end) and [existing_base, existing_end)
+                if not (new_end <= existing_base or base >= existing_end):
+                    # Overlap detected - expand merged region
+                    merged_base = min(merged_base, existing_base)
+                    merged_end = max(merged_end, existing_end)
+                    indices_to_remove.append(i)
+
+            # Remove overlapped regions (in reverse order to preserve indices)
+            for i in reversed(indices_to_remove):
+                del regions[i]
+
+            # Add the merged region
+            regions.append((merged_base, merged_end - merged_base))
 
     # Check for tohost/fromhost at low addresses
     tohost_addr = symbols.get('tohost', 0)
@@ -849,18 +862,29 @@ def get_spike_memory_map(elf_path, symbols=None):
             # Align to 4 KiB
             base = comm_addr & ~0xFFF
             size = 0x1000  # 4 KiB region
+            new_end = base + size
 
-            # Check for overlap
-            overlaps = False
-            for existing_base, existing_size in regions:
+            # Find all overlapping regions and merge them all
+            merged_base = base
+            merged_end = new_end
+            indices_to_remove = []
+
+            for i, (existing_base, existing_size) in enumerate(regions):
                 existing_end = existing_base + existing_size
-                new_end = base + size
-                if not (new_end <= existing_base or base >= existing_end):
-                    overlaps = True
-                    break
 
-            if not overlaps and (base, size) not in regions:
-                regions.append((base, size))
+                # Check for overlap
+                if not (new_end <= existing_base or base >= existing_end):
+                    # Overlap detected - expand merged region
+                    merged_base = min(merged_base, existing_base)
+                    merged_end = max(merged_end, existing_end)
+                    indices_to_remove.append(i)
+
+            # Remove overlapped regions (in reverse order to preserve indices)
+            for i in reversed(indices_to_remove):
+                del regions[i]
+
+            # Add the merged region
+            regions.append((merged_base, merged_end - merged_base))
 
     # Sort regions by base address
     regions.sort(key=lambda x: x[0])
