@@ -236,24 +236,32 @@ class sigChecker():
                 match = (isa_val == rtl_val)
 
                 # Special handling for trap CSRs (mcause, mepc, mtval):
-                # - If exception types differ (different mcause exception codes), report mcause mismatch
+                #
+                # For wrapped ELFs: trap CSRs reflect wrapper mechanics, not payload behavior.
+                # Skip all trap CSR comparison for wrapped ELFs.
+                #
+                # For direct (pre-instrumented) ELFs: use fine-grained comparison:
+                # - If exception types differ, report mcause mismatch
                 # - If exception types match:
-                #   - For ecall exits (mcause=8 or 11), skip mepc/mtval (timing-dependent in trap handler)
-                #   - For other exceptions, compare mepc/mtval (distinguishes correct vs incorrect trap location)
-                if csr_name == 'mcause' and not same_exception_type:
-                    # Different exception types - this is a real bug, report it
+                #   - For ecall exits (mcause=8 or 11), skip mepc/mtval (timing-dependent)
+                #   - For other exceptions, compare mepc/mtval (distinguishes trap location)
+                if self.wrapped_elf and csr_name in ['mcause', 'mepc', 'mtval']:
+                    # Wrapped ELF - skip all trap CSR comparison
+                    # These CSRs reflect the wrapper's trap handler, not the payload
+                    continue
+                elif csr_name == 'mcause' and not same_exception_type:
+                    # Direct ELF, different exception types - report mcause mismatch
                     if not match: csr_match = False
                     self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
                                      format(csr_name, isa_val, rtl_val), not match)
                 elif csr_name in ['mepc', 'mtval'] and same_exception_type:
-                    # Check if this is an ecall exit (normal termination)
+                    # Direct ELF, same exception type - check if ecall exit
                     is_ecall_exit = (isa_exc_code in [8, 11])
                     if is_ecall_exit:
                         # Ecall exit - skip mepc/mtval comparison (timing-dependent)
                         continue
                     else:
-                        # Other exception (access error, illegal instruction, etc.)
-                        # Compare mepc/mtval to ensure we trapped at the correct location
+                        # Other exception - compare mepc/mtval (distinguishes trap location)
                         if not match: csr_match = False
                         self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
                                          format(csr_name, isa_val, rtl_val), not match)
