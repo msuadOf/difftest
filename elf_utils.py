@@ -835,7 +835,7 @@ def detect_isa_from_binary(bin_path):
         return 'rv64'  # Default on error
 
 
-def resolve_bin_to_elf(bin_path, isa_width_hint=None):
+def resolve_bin_to_elf(bin_path, isa_width_hint=None, output_dir=None):
     """
     Resolve a .bin file to its corresponding .elf file for corpus processing.
 
@@ -846,6 +846,7 @@ def resolve_bin_to_elf(bin_path, isa_width_hint=None):
     Args:
         bin_path: Path to the .bin file
         isa_width_hint: Optional ISA width hint ('rv32' or 'rv64') for standalone binaries
+        output_dir: Optional directory for generated ELF files (avoids read-only source issues)
 
     Returns:
         Tuple of (elf_path, isa_width, symbols) where:
@@ -884,8 +885,8 @@ def resolve_bin_to_elf(bin_path, isa_width_hint=None):
 
     isa_width = isa_width_hint
 
-    # Generate minimal ELF
-    generated_elf = bin_to_elf(bin_path, output_elf_path=None, isa_width=isa_width)
+    # Generate minimal ELF into output_dir (avoids read-only source directory issues)
+    generated_elf = bin_to_elf(bin_path, output_elf_path=None, isa_width=isa_width, output_dir=output_dir)
 
     # Extract symbols from generated ELF
     symbols = get_symbols(generated_elf)
@@ -1187,10 +1188,10 @@ def get_spike_memory_map(elf_path, symbols=None):
                     pass
             # Check for multi-line format (ELF64): first line has LOAD, Offset, VirtAddr, PhysAddr
             # Format: LOAD 0x...offset 0x...vaddr 0x...paddr (4 parts minimum)
-            if len(parts) >= 3:
+            if len(parts) >= 4:
                 try:
-                    # For multi-line format, parts[1] is VirtAddr
-                    pending_vaddr = int(parts[1], 16)  # Store VirtAddr, wait for next line for MemSiz
+                    # For multi-line format, parts[2] is VirtAddr (parts[1] is Offset)
+                    pending_vaddr = int(parts[2], 16)  # Store VirtAddr, wait for next line for MemSiz
                     continue
                 except (ValueError, IndexError):
                     pending_vaddr = None

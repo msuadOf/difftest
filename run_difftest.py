@@ -84,7 +84,8 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
 
         try:
             # Resolve .bin to ELF (uses sibling .elf if available, otherwise generates minimal ELF)
-            resolved_elf, isa_width, resolved_symbols = resolve_bin_to_elf(elf_path, isa_width_hint=isa_width)
+            # Pass output_dir so generated ELF goes to writable location
+            resolved_elf, isa_width, resolved_symbols = resolve_bin_to_elf(elf_path, isa_width_hint=isa_width, output_dir=output_dir)
 
             if debug:
                 print(f'[Difftest] Resolved .bin to ELF: {resolved_elf}')
