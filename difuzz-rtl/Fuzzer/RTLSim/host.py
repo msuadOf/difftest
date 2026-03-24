@@ -165,9 +165,21 @@ class rvRTLhost():
         # Check if this is a pre-instrumented ELF with data_addrs
         if hasattr(rtl_input, 'data_addrs') and rtl_input.data_addrs:
             # Pre-instrumented ELF: restore data at original addresses
-            for addr, value in rtl_input.data_addrs:
-                memory[addr] = value
-            self.debug_print(f'[RTLHost] Loaded {len(rtl_input.data_addrs)} data words at original addresses')
+            # data_addrs is a list of (data_start, data_end) ranges
+            data_addrs = rtl_input.data_addrs
+            data_idx = 0  # Index into rtl_input.data
+
+            for data_start, data_end in data_addrs:
+                # Restore data words for this section
+                addr = data_start & ~0x7  # Align down to 8 bytes
+                end_addr = (data_end + 7) & ~0x7  # Round up to 8 bytes
+
+                while addr < end_addr and data_idx < len(data):
+                    memory[addr] = data[data_idx]
+                    addr += 8
+                    data_idx += 1
+
+            self.debug_print(f'[RTLHost] Loaded {data_idx} data words at original addresses')
         else:
             # Wrapped ELF: use _random_data sections
             data_addrs = []

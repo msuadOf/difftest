@@ -27,12 +27,18 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
     if not os.path.isfile(wrapped_hex_path):
         raise FileNotFoundError(f"Hex file not found: {wrapped_hex_path}")
 
-    # Check if this is a pre-instrumented ELF (has begin_signature symbol)
-    is_preinstrumented = 'begin_signature' in symbols
+    # Check if this is a pre-instrumented ELF vs wrapped ELF
+    # Both have begin_signature, but wrapped ELFs also have _random_data* symbols
+    has_begin_signature = 'begin_signature' in symbols
+    has_random_data = any(f'_random_data{i}' in symbols for i in range(6))
+
+    # Pre-instrumented ELF: has begin_signature but NO _random_data* symbols
+    # Wrapped ELF: has both begin_signature AND _random_data* symbols
+    is_preinstrumented = has_begin_signature and not has_random_data
 
     # Extract data words from the _random_data sections (for wrapped ELFs)
     # and from ordinary .data/.rodata sections (for pre-instrumented ELFs)
-    # Returns (data_words, data_addrs) where data_addrs is a list of (addr, value) tuples
+    # Returns (data_words, data_addrs) where data_addrs is a list of (data_start, data_end) ranges
     data_words, data_addrs = _extract_data_words_from_symbols(symbols, elf_path=wrapped_elf_path,
                                                               is_preinstrumented=is_preinstrumented)
 
@@ -162,12 +168,12 @@ def _extract_data_words_from_symbols(symbols, elf_path=None, is_preinstrumented=
     Returns:
         Tuple of (data_words, data_addrs) where:
         - data_words: List of 64-bit integers (for compatibility)
-        - data_addrs: List of (addr, value) tuples for pre-instrumented ELFs
+        - data_addrs: List of (data_start, data_end) ranges for save_signature()
     """
     from elf_utils import elf_to_memory_dict
 
     data_words = []
-    data_addrs = []  # List of (addr, value) tuples for pre-instrumented ELFs
+    data_addrs = []  # List of (data_start, data_end) ranges
 
     # If we have the ELF path, we can extract the actual data values
     if elf_path and os.path.isfile(elf_path):
@@ -187,6 +193,9 @@ def _extract_data_words_from_symbols(symbols, elf_path=None, is_preinstrumented=
                         section_start, section_size = section_headers[section_name]
                         section_end = section_start + section_size
 
+                        # Store the section range for save_signature()
+                        data_addrs.append((section_start, section_end))
+
                         # Extract data words from memory, 8-byte aligned
                         addr = section_start & ~0x7  # Align down to 8 bytes
                         end_addr = (section_end + 7) & ~0x7  # Round up to 8 bytes
@@ -195,7 +204,6 @@ def _extract_data_words_from_symbols(symbols, elf_path=None, is_preinstrumented=
                             if addr in memory:
                                 value = memory[addr]
                                 data_words.append(value)
-                                data_addrs.append((addr, value))
                             addr += 8
 
             # Always extract from _random_data sections (for wrapped ELFs)
