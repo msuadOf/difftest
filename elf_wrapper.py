@@ -85,11 +85,18 @@ def _find_payload_start(memory, start_addr):
     Skips privileged instructions (CSR writes, MRET, etc.) that would fail
     when executed in user mode after the wrapper's mret.
 
-    Returns the address of the first non-privileged instruction,
+    The privileged prologue may intermix non-privileged instructions (like `li`)
+    with privileged instructions (like `csrwi`), so we scan until we find a
+    sequence of consecutive non-privileged instructions.
+
+    Returns the address of the first instruction after the privileged prologue,
     or start_addr if no privileged instructions are found.
     """
     addr = start_addr
-    max_scan = 100  # Scan up to 100 instructions (heuristic)
+    max_scan = 200  # Scan up to 200 instructions (heuristic)
+    consecutive_non_priv = 0  # Counter for consecutive non-privileged instructions
+    consecutive_threshold = 16  # Need 16+ consecutive non-priv instructions to consider prologue over
+    first_non_priv_addr = None  # Track the first non-privileged instruction we saw
 
     for _ in range(max_scan):
         # Get the word containing this instruction
@@ -99,6 +106,10 @@ def _find_payload_start(memory, start_addr):
 
         # Check if this is a privileged instruction
         if _is_privileged_instruction(memory, addr):
+            # Reset counter when we see a privileged instruction
+            consecutive_non_priv = 0
+            first_non_priv_addr = None
+
             # Skip this instruction and continue
             # Determine instruction length
             word = memory[word_addr]
@@ -111,8 +122,31 @@ def _find_payload_start(memory, start_addr):
                 # 16-bit compressed instruction
                 addr += 2
         else:
-            # Found a non-privileged instruction, this is the payload start
-            return addr
+            # Non-privileged instruction
+            if first_non_priv_addr is None:
+                first_non_priv_addr = addr
+
+            consecutive_non_priv += 1
+
+            # Determine instruction length
+            word = memory[word_addr]
+            byte_offset = addr - word_addr
+            low_2_bits = (word >> (byte_offset * 8)) & 0x3
+            if low_2_bits == 0x3:
+                # 32-bit instruction
+                addr += 4
+            else:
+                # 16-bit compressed instruction
+                addr += 2
+
+            # If we've seen enough consecutive non-privileged instructions,
+            # we've likely passed the privileged prologue
+            if consecutive_non_priv >= consecutive_threshold:
+                return first_non_priv_addr
+
+    # If we didn't find a clear end to the prologue, check if we saw any non-priv instructions
+    if first_non_priv_addr is not None:
+        return first_non_priv_addr
 
     # If we didn't find any non-privileged instruction, return start_addr
     return start_addr

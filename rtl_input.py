@@ -53,6 +53,57 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
     )
 
 
+def _get_section_headers(elf_path):
+    """
+    Get section headers from an ELF file.
+
+    Returns a dict mapping section names to (address, size) tuples.
+    Only returns allocated sections (SHF_ALLOC) that have non-zero size.
+    """
+    import subprocess
+
+    if not os.path.isfile(elf_path):
+        return {}
+
+    # Use readelf to get section headers
+    result = subprocess.run(
+        ['riscv64-unknown-elf-readelf', '-S', elf_path],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        result = subprocess.run(
+            ['readelf', '-S', elf_path],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            return {}
+
+    sections = {}
+    for line in result.stdout.split('\n'):
+        if not line.strip() or line.startswith('There are') or line.startswith('Section Headers:'):
+            continue
+        # Parse readelf output format:
+        # [ 4] .text             PROGBITS        0000000080000000  00000200
+        #       0000000000000142  0000000000000000  AX       0     0     4
+        parts = line.split()
+        if len(parts) >= 6 and parts[0].startswith('['):
+            # Extract section name (parts[1])
+            section_name = parts[1]
+            # Extract address (parts[2]) and size (parts[4])
+            try:
+                addr = int(parts[2], 16)
+                size = int(parts[4], 16)
+                # Extract flags (parts[5])
+                flags = parts[5]
+                # Only include allocated sections with non-zero size
+                if 'A' in flags and size > 0:
+                    sections[section_name] = (addr, size)
+            except (ValueError, IndexError):
+                continue
+
+    return sections
+
+
 def _extract_data_words_from_symbols(symbols, elf_path=None, is_preinstrumented=False):
     """
     Extract data words from the ELF for RTL simulation.
@@ -80,25 +131,15 @@ def _extract_data_words_from_symbols(symbols, elf_path=None, is_preinstrumented=
 
             if is_preinstrumented:
                 # For pre-instrumented ELFs, extract from ordinary data sections
+                # Get section headers from ELF (not from nm symbols)
+                section_headers = _get_section_headers(elf_path)
+
                 # Look for .data, .rodata, .sdata, .srodata sections
                 data_section_names = ['.data', '.rodata', '.sdata', '.srodata']
                 for section_name in data_section_names:
-                    if section_name in symbols:
-                        # Find the end of this section
-                        # Try common end symbols first
-                        end_sym = section_name.replace('.data', '_edata')
-                        end_sym_alt = section_name.replace('.data', '_end')
-                        if end_sym in symbols:
-                            section_end = symbols[end_sym]
-                        elif end_sym_alt in symbols:
-                            section_end = symbols[end_sym_alt]
-                        else:
-                            # No explicit end symbol, estimate from next symbol
-                            # or use a reasonable maximum size
-                            section_start = symbols[section_name]
-                            section_end = section_start + 0x1000  # Conservative estimate
-
-                        section_start = symbols[section_name]
+                    if section_name in section_headers:
+                        section_start, section_size = section_headers[section_name]
+                        section_end = section_start + section_size
 
                         # Extract data words from memory, 8-byte aligned
                         addr = section_start & ~0x7  # Align down to 8 bytes
