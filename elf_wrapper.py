@@ -19,6 +19,105 @@ TEMPLATE_DIR = os.path.join(
 )
 
 
+def _is_privileged_instruction(insn_bytes, addr):
+    """
+    Check if an instruction is a privileged (system) instruction.
+
+    Returns True if the instruction is a CSR instruction, MRET, SRET, or
+    other privileged instruction that would fail in user mode.
+
+    Args:
+        insn_bytes: Memory dict containing the instruction
+        addr: Address of the instruction
+
+    Returns:
+        True if the instruction is privileged, False otherwise
+    """
+    # Get the word containing this instruction
+    word_addr = addr & ~0x7
+    if word_addr not in insn_bytes:
+        return False
+
+    word = insn_bytes[word_addr]
+
+    # Extract the instruction (16 or 32 bits)
+    # RISC-V instructions are little-endian
+    byte_offset = addr - word_addr
+
+    # Check if this is a 16-bit compressed instruction (bits [1:0] != 11)
+    low_2_bits = (word >> (byte_offset * 8)) & 0x3
+    is_compressed = (low_2_bits != 0x3)
+
+    if is_compressed:
+        # 16-bit compressed instruction
+        insn = (word >> (byte_offset * 8)) & 0xFFFF
+
+        # Check for compressed system instructions
+        # C.SLLI: 01??????000001??
+        # Actually, let me check the encoding more carefully
+        # For compressed instructions, we need to check specific opcodes
+
+        # Compressed system instructions have opcode = 100 (bits [1:0] = 00, bits [15:13] = 100)
+        # C.SLLI: 100...  (but this is not a system instruction)
+
+        # For simplicity, treat all compressed instructions as non-privileged
+        # (they're typically computational, not CSR/system)
+        return False
+    else:
+        # 32-bit instruction
+        insn = (word >> (byte_offset * 8)) & 0xFFFFFFFF
+
+        # System instructions have opcode = 1110011 (0x73)
+        opcode = insn & 0x7F
+
+        if opcode == 0x73:
+            # This is a system instruction (CSR, MRET, SRET, etc.)
+            # All of these are privileged and should be skipped
+            return True
+
+        return False
+
+
+def _find_payload_start(memory, start_addr):
+    """
+    Scan memory starting at start_addr to find where the actual payload begins.
+
+    Skips privileged instructions (CSR writes, MRET, etc.) that would fail
+    when executed in user mode after the wrapper's mret.
+
+    Returns the address of the first non-privileged instruction,
+    or start_addr if no privileged instructions are found.
+    """
+    addr = start_addr
+    max_scan = 100  # Scan up to 100 instructions (heuristic)
+
+    for _ in range(max_scan):
+        # Get the word containing this instruction
+        word_addr = addr & ~0x7
+        if word_addr not in memory:
+            break
+
+        # Check if this is a privileged instruction
+        if _is_privileged_instruction(memory, addr):
+            # Skip this instruction and continue
+            # Determine instruction length
+            word = memory[word_addr]
+            byte_offset = addr - word_addr
+            low_2_bits = (word >> (byte_offset * 8)) & 0x3
+            if low_2_bits == 0x3:
+                # 32-bit instruction
+                addr += 4
+            else:
+                # 16-bit compressed instruction
+                addr += 2
+        else:
+            # Found a non-privileged instruction, this is the payload start
+            return addr
+
+    # If we didn't find any non-privileged instruction, return start_addr
+    return start_addr
+
+
 def extract_instructions_from_elf(elf_path):
     """
     Extract the raw instruction bytes from an ELF's .text section.
@@ -78,7 +177,24 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
     memory = elf_to_memory_dict(elf_path)
     symbols = get_symbols(elf_path)
 
-    start = symbols.get('_start', DRAM_BASE)
+    # Determine where to start copying user code
+    # Priority: main symbol > _start (skipping privileged init)
+    # Many test ELFs have privileged initialization in _start (CSR writes, etc.)
+    # that would fail when executed in user mode after wrapper's mret.
+    # We try to find 'main' first, which is typically the actual payload.
+    # If 'main' doesn't exist, we scan _start to skip privileged instructions.
+    if 'main' in symbols:
+        start = symbols['main']
+    elif 'reset_vector' in symbols:
+        start = symbols['reset_vector']
+    else:
+        # No clear payload marker, use _start but scan to skip privileged init
+        start = symbols.get('_start', DRAM_BASE)
+        # Scan _start to find where privileged initialization ends
+        # by skipping CSR and other privileged instructions
+        payload_start = _find_payload_start(memory, start)
+        if payload_start > start:
+            start = payload_start
 
     # Determine where user code ends
     # Priority: _end_main symbol > actual code content > .text section end

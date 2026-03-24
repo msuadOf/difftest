@@ -187,12 +187,28 @@ class sigChecker():
         isa_mcause = isa_csr_vals.get('mcause', 0)
         rtl_mcause = rtl_csr_vals.get('mcause', 0)
 
-        # Exception code is in low 7 bits (bit 63 or 7 is interrupt flag depending on XLEN)
-        # We need to compare both exception code AND interrupt flag
+        # Exception code is in low 7 bits (bit 63 or 31 is interrupt flag depending on XLEN)
+        # For RV32: mcause is stored in lower 32 bits, interrupt flag is bit 31
+        # For RV64: interrupt flag is bit 63
+        # We need to detect XLEN and extract the interrupt flag correctly
         isa_exc_code = isa_mcause & 0x7F  # Low 7 bits: exception cause
         rtl_exc_code = rtl_mcause & 0x7F
-        isa_interrupt = (isa_mcause >> 63) & 1  # Interrupt flag (bit 63 in RV64, bit 7 in RV32)
-        rtl_interrupt = (rtl_mcause >> 63) & 1
+
+        # Detect if this is RV32 by checking if upper 32 bits are zero
+        # (RV32 mcause values are stored in the lower 32 bits of the 64-bit slot)
+        isa_is_rv32 = (isa_mcause >> 32) == 0
+        rtl_is_rv32 = (rtl_mcause >> 32) == 0
+
+        if isa_is_rv32:
+            isa_interrupt = (isa_mcause >> 31) & 1  # RV32: interrupt flag is bit 31
+        else:
+            isa_interrupt = (isa_mcause >> 63) & 1  # RV64: interrupt flag is bit 63
+
+        if rtl_is_rv32:
+            rtl_interrupt = (rtl_mcause >> 31) & 1
+        else:
+            rtl_interrupt = (rtl_mcause >> 63) & 1
+
         # Same exception type means both exception code AND interrupt flag match
         same_exception_type = (isa_exc_code == rtl_exc_code) and (isa_interrupt == rtl_interrupt)
 
@@ -277,12 +293,20 @@ class sigChecker():
                                      format(csr_name, isa_val, rtl_val), not match)
                 elif csr_name in ['mepc', 'mtval'] and same_exception_type:
                     # Direct ELF, same exception type - check if ecall exit
-                    is_ecall_exit = (isa_exc_code in [8, 11])
+                    # ECALL has cause code 8 (user) or 11 (machine) WITHOUT interrupt flag set
+                    # Machine external interrupts also use code 11 but have interrupt flag set
+                    is_ecall_exit = (
+                        isa_exc_code in [8, 11] and
+                        not isa_interrupt and
+                        not rtl_interrupt
+                    )
                     if is_ecall_exit:
                         # Ecall exit - skip mepc/mtval comparison (timing-dependent)
                         continue
                     else:
-                        # Other exception - compare mepc/mtval (distinguishes trap location)
+                        # Other exception or interrupt - compare mepc/mtval
+                        # (distinguishes trap location for exceptions,
+                        #  catches interrupt mismatches for interrupts)
                         if not match: csr_match = False
                         self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
                                          format(csr_name, isa_val, rtl_val), not match)
