@@ -127,7 +127,8 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
     if has_signature_symbols(symbols):
         # ELF already has signature infrastructure, use directly
         wrapped_elf = elf_path
-        wrapped_hex = elf_path.replace('.elf', '.hex')
+        # Use splitext to only replace the file extension, not all '.elf' substrings in the path
+        wrapped_hex = os.path.splitext(elf_path)[0] + '.hex'
         wrapped_symbols = symbols
         is_wrapped = False  # This is a direct (pre-instrumented) ELF, not wrapped by us
 

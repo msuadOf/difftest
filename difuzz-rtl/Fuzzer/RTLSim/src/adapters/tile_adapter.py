@@ -113,7 +113,12 @@ class tileAdapter():
 
         while self.drive:
             if self.pc_valid():
-                pc = self.monitor_pc.value & ((1 << len(self.monitor_pc.value)) - 1)
+                # Convert LogicArray to int for cocotb 2.x compatibility
+                pc_value = self.monitor_pc.value
+                if hasattr(pc_value, 'to_int'):
+                    pc = int(pc_value.to_int()) & ((1 << len(pc_value)) - 1)
+                else:
+                    pc = int(pc_value) & ((1 << len(pc_value)) - 1)
                 if pc in ints.keys():
                     self.debug_print('[RTLHost] interrupt_handler, pc: {:016x}, INT: {:01x}'.
                                      format(pc, ints[pc]))
