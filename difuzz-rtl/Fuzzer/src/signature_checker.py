@@ -230,34 +230,12 @@ class sigChecker():
             else:
                 match = (isa_val == rtl_val)
 
-                # Special handling for exception CSRs (mcause, mepc, mtval):
-                # For wrapped programs: Compare normally to detect trap handling bugs,
-                # but skip only for the expected ecall exit (mcause=8 or 11)
-                # For direct (pre-instrumented) ELFs: Compare normally
-                if csr_name in ['mcause', 'mepc', 'mtval'] and self.wrapped_elf:
-                    # For wrapped programs, check if this is the expected ecall exit
-                    isa_cause = isa_csr_vals.get('mcause', 0)
-                    rtl_cause = rtl_csr_vals.get('mcause', 0)
-                    # Extract exception cause from mcause (bits [4:0] for exception)
-                    isa_exc = isa_cause & 0x7F
-                    rtl_exc = rtl_cause & 0x7F
-                    # Ecall causes: 8 (User ecall) or 11 (Machine ecall)
-                    is_ecall_exit = (isa_exc in [8, 11] and rtl_exc in [8, 11])
-                    if is_ecall_exit:
-                        # Expected ecall exit - skip exception CSR comparison
-                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: wrapped ELF ecall exit)'. \
-                                         format(csr_name, isa_val, rtl_val), False)
-                        continue
-                    else:
-                        # Not an ecall exit - compare normally to detect trap handling bugs
-                        if not match: csr_match = False
-                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                                         format(csr_name, isa_val, rtl_val), not match)
-                else:
-                    # Direct ELFs or non-exception CSRs: Compare normally
-                    if not match: csr_match = False
-                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                                     format(csr_name, isa_val, rtl_val), not match)
+                # Compare all CSRs normally, including exception CSRs (mcause, mepc, mtval)
+                # This ensures trap/exception handling bugs are detected for both wrapped
+                # and direct ELFs. The wrapped_elf flag is kept for potential future use.
+                if not match: csr_match = False
+                self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                 format(csr_name, isa_val, rtl_val), not match)
 
         for i in range(6): # TODO, max_sections = 6
             data_start = data_symbols[i][0]

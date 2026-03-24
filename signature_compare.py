@@ -46,7 +46,12 @@ class SignatureComparer:
                 raise ValueError(f"Missing required symbol: {sym}")
 
     def _read_signature_file(self, sig_file):
-        """Read signature file into list of 64-bit values."""
+        """Read signature file into list of 32-bit values.
+
+        DifuzzRTL signature format: each line is 32 characters (128 bits)
+        containing 4 x 32-bit values in a specific layout.
+        We extract each 32-bit value in the correct order.
+        """
         if not os.path.isfile(sig_file):
             raise FileNotFoundError(f"Signature file not found: {sig_file}")
 
@@ -56,15 +61,23 @@ class SignatureComparer:
                 line = line.strip()
                 if not line:
                     continue
-                # Each line contains two 32-bit hex values (16 chars each)
-                # Format: {high32}{low32}
+                # Each line is 32 characters (128 bits) containing 4 x 32-bit values
+                # Format according to DifuzzRTL's read_sig():
+                # lines[idx // 2][16 - 16 * (idx % 2):32 - 16 * (idx % 2)]
+                # This means:
+                # - idx 0: line[16:32]   (2nd 32-bit chunk)
+                # - idx 1: line[0:16]    (1st 32-bit chunk)
+                # - idx 2: line[48:64]   (4th 32-bit chunk, if line was longer)
+                # - idx 3: line[32:48]   (3rd 32-bit chunk, if line was longer)
+                # But since each line is exactly 32 chars:
+                # - idx 0: line[16:32]
+                # - idx 1: line[0:16]
+                # For the next slot (idx 2,3), they would be on the next line
                 if len(line) == 32:
-                    low = int(line[16:32], 16)
-                    high = int(line[0:16], 16)
-                    values.append(low)
-                    values.append(high)
-                elif len(line) == 16:
-                    values.append(int(line, 16))
+                    # First 32-bit value (chars 16-31)
+                    values.append(int(line[16:32], 16))
+                    # Second 32-bit value (chars 0-15)
+                    values.append(int(line[0:16], 16))
 
         return values
 
@@ -73,11 +86,11 @@ class SignatureComparer:
         sig_start = self.symbols['begin_signature']
         sig_end = self.symbols['end_signature']
 
-        # Calculate offset in 64-bit words
+        # Calculate offset in 32-bit values (each signature slot is 8 bytes with one 32-bit value)
         region_size = sig_end - sig_start
-        num_words = region_size // 8
+        num_slots = region_size // 8
 
-        return sig_values[:num_words * 2]  # 2 values per line (low, high)
+        return sig_values[:num_slots]  # Each slot is one 32-bit value
 
     def compare(self, isa_sig_file, rtl_sig_file=None):
         """
@@ -165,20 +178,21 @@ class SignatureComparer:
         mismatches = []
         xreg_mismatches = 0
 
-        # Each register is 8 bytes, stored as two 32-bit values
+        # Each register is stored as a single 32-bit value in the signature
         for i in range(32):
             sym_name = f'reg_x{i}_output'
             if sym_name not in self.symbols:
                 continue
 
+            # Each signature slot is 8 bytes, containing one 32-bit value
             offset = (self.symbols[sym_name] - sig_start) // 8
-            idx = offset * 2  # Two 32-bit values per 64-bit register
+            idx = offset  # Direct index, each slot is one 32-bit value
 
-            if idx + 1 >= len(isa_values) or idx + 1 >= len(rtl_values):
+            if idx >= len(isa_values) or idx >= len(rtl_values):
                 continue
 
-            isa_val = (isa_values[idx + 1] << 32) | isa_values[idx]
-            rtl_val = (rtl_values[idx + 1] << 32) | rtl_values[idx]
+            isa_val = isa_values[idx]
+            rtl_val = rtl_values[idx]
 
             if isa_val != rtl_val:
                 xreg_mismatches += 1
@@ -199,19 +213,21 @@ class SignatureComparer:
         mismatches = []
         freg_mismatches = 0
 
+        # Each FP register is stored as a single 32-bit value in the signature
         for i in range(32):
             sym_name = f'reg_f{i}_output'
             if sym_name not in self.symbols:
                 continue
 
+            # Each signature slot is 8 bytes, containing one 32-bit value
             offset = (self.symbols[sym_name] - sig_start) // 8
-            idx = offset * 2
+            idx = offset  # Direct index, each slot is one 32-bit value
 
-            if idx + 1 >= len(isa_values) or idx + 1 >= len(rtl_values):
+            if idx >= len(isa_values) or idx >= len(rtl_values):
                 continue
 
-            isa_val = (isa_values[idx + 1] << 32) | isa_values[idx]
-            rtl_val = (rtl_values[idx + 1] << 32) | rtl_values[idx]
+            isa_val = isa_values[idx]
+            rtl_val = rtl_values[idx]
 
             if isa_val != rtl_val:
                 freg_mismatches += 1
@@ -230,19 +246,21 @@ class SignatureComparer:
         mismatches = []
         csr_mismatches = 0
 
+        # Each CSR is stored as a single 32-bit value in the signature
         for csr_name in CSR_NAMES:
             sym_name = f'{csr_name}_output'
             if sym_name not in self.symbols:
                 continue
 
+            # Each signature slot is 8 bytes, containing one 32-bit value
             offset = (self.symbols[sym_name] - sig_start) // 8
-            idx = offset * 2
+            idx = offset  # Direct index, each slot is one 32-bit value
 
-            if idx + 1 >= len(isa_values) or idx + 1 >= len(rtl_values):
+            if idx >= len(isa_values) or idx >= len(rtl_values):
                 continue
 
-            isa_val = (isa_values[idx + 1] << 32) | isa_values[idx]
-            rtl_val = (rtl_values[idx + 1] << 32) | rtl_values[idx]
+            isa_val = isa_values[idx]
+            rtl_val = rtl_values[idx]
 
             if isa_val != rtl_val:
                 csr_mismatches += 1
