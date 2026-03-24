@@ -82,10 +82,14 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
         env['RTL_SIG_FILE'] = os.path.abspath(rtl_sig_path)
         env['TOPLEVEL_LANG'] = 'verilog'
         # Set TOPLEVEL to match info file (e.g., "RocketTile" for RocketTile_info.txt)
-        env['TOPLEVEL'] = vfile.split()[1] if " " in vfile else vfile
-        # Strip _state suffix if present to match info file name
-        if env['TOPLEVEL'].endswith('_state'):
-            env['TOPLEVEL'] = env['TOPLEVEL'][:-6]  # Remove '_state' (6 characters)
+        # For SmallBoomTile_v1.2_state -> BoomTile, RocketTile_state -> RocketTile
+        vfile_name = vfile.split()[1] if " " in vfile else vfile
+        if 'SmallBoomTile' in vfile_name:
+            env['TOPLEVEL'] = 'BoomTile'
+        elif vfile_name.endswith('_state'):
+            env['TOPLEVEL'] = vfile_name[:-6]  # Remove '_state' (6 characters)
+        else:
+            env['TOPLEVEL'] = vfile_name
         # Create result file for communicating RTL result back from test
         env['RTL_RESULT_FILE'] = os.path.abspath(os.path.join(
             os.path.dirname(rtl_sig_path), 'rtl_result.txt'))

@@ -12,8 +12,15 @@ TOPLEVEL_LAGN ?= verilog
 # Default to RocketTile if VFILE not specified
 VFILE ?= RocketTile_state
 
-# Strip _state suffix to get TOPLEVEL name (e.g., RocketTile_state -> RocketTile)
-TOPLEVEL ?= $(subst _state,,$(VFILE))
+# Derive TOPLEVEL from VFILE
+# For RocketTile_state -> RocketTile
+# For SmallBoomTile_v1.2_state -> BoomTile (not SmallBoomTile_v1.2)
+# For SmallBoomTile_v1.3_state -> BoomTile (not SmallBoomTile_v1.3)
+ifneq ($(findstring SmallBoomTile,$(VFILE)),)
+TOPLEVEL = BoomTile
+else
+TOPLEVEL = $(subst _state,,$(VFILE))
+endif
 VERILOG_SOURCES = $(CWD)/../Benchmarks/Verilog/$(VFILE).v
 COCOTB_HDL_TIMEUNIT=1us
 COCOTB_HDL_TIMEPRECISION=1us
