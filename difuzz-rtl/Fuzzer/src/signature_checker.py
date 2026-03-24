@@ -187,10 +187,14 @@ class sigChecker():
         isa_mcause = isa_csr_vals.get('mcause', 0)
         rtl_mcause = rtl_csr_vals.get('mcause', 0)
 
-        # Exception code is in low 8 bits (bit 7 is interrupt flag)
-        isa_exc_code = isa_mcause & 0xFF
-        rtl_exc_code = rtl_mcause & 0xFF
-        same_exception_type = (isa_exc_code == rtl_exc_code)
+        # Exception code is in low 7 bits (bit 63 or 7 is interrupt flag depending on XLEN)
+        # We need to compare both exception code AND interrupt flag
+        isa_exc_code = isa_mcause & 0x7F  # Low 7 bits: exception cause
+        rtl_exc_code = rtl_mcause & 0x7F
+        isa_interrupt = (isa_mcause >> 63) & 1  # Interrupt flag (bit 63 in RV64, bit 7 in RV32)
+        rtl_interrupt = (rtl_mcause >> 63) & 1
+        # Same exception type means both exception code AND interrupt flag match
+        same_exception_type = (isa_exc_code == rtl_exc_code) and (isa_interrupt == rtl_interrupt)
 
         for (i, val) in enumerate(zip(isa_xreg_vals, rtl_xreg_vals)):
             match = (val[0] == val[1])

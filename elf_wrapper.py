@@ -101,46 +101,55 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
 
     # Collect code bytes (up to code_end, which is the actual .text section end)
     # This excludes .data, .rodata, and .bss sections
-    # IMPORTANT: Only copy mapped bytes, do NOT fill gaps with zeros!
-    # This preserves sparse .text layouts where sections are not contiguous.
+    # IMPORTANT: Preserve gaps between discontiguous sections using .org directives!
+    # This ensures that jumps/calls that rely on specific address spacing work correctly.
     # For example, .text.init at 0x80000000 and .text at 0x80001000 should
-    # maintain that gap, not be filled with zero instructions.
-    raw_bytes = bytearray()
+    # maintain that 0x1000 gap, not be flattened into a contiguous stream.
+    word_directives = []
+    base_addr = start & ~0x7  # 8-byte aligned base address
+    current_offset = 0  # Current offset from base_addr in bytes
 
     # Iterate through 8-byte aligned memory words that contain code
-    # This preserves the original layout and doesn't inject zeros into gaps
-    for word_addr in range(start & ~0x7, code_end, 8):
+    for word_addr in range(base_addr, code_end, 8):
         if word_addr in memory:
             word = memory[word_addr]
-            # Extract all 8 bytes of this word
-            for byte_offset in range(8):
-                raw_bytes.append((word >> (byte_offset * 8)) & 0xFF)
-        # Note: We do NOT add zeros for unmapped addresses
-        # This preserves the sparse layout of the original ELF
 
-    # Generate instruction directives from raw bytes
-    # IMPORTANT: Do NOT pad to 4-byte alignment!
-    # The original code may end with a 16-bit compressed instruction,
-    # and adding padding would insert extra zeros that get executed.
-    # Instead, emit a mix of .word and .2byte directives as needed.
-    word_directives = []
-    i = 0
-    while i < len(raw_bytes):
-        if i + 4 <= len(raw_bytes):
-            # Emit a 4-byte word
-            w = struct.unpack_from('<I', raw_bytes, i)[0]
-            word_directives.append(f'    .word 0x{w:08x}')
-            i += 4
-        elif i + 2 <= len(raw_bytes):
-            # Emit a 2-byte halfword (compressed instruction)
-            h = struct.unpack_from('<H', raw_bytes, i)[0]
-            word_directives.append(f'    .2byte 0x{h:04x}')
-            i += 2
-        else:
-            # Odd number of bytes - should not happen in valid RISC-V code
-            # Emit as single byte (not a standard instruction, but preserves data)
-            word_directives.append(f'    .byte 0x{raw_bytes[i]:02x}')
-            i += 1
+            # Calculate the expected offset for this word
+            expected_offset = word_addr - base_addr
+
+            # If there's a gap, insert .org directive to preserve the spacing
+            if expected_offset > current_offset:
+                gap_size = expected_offset - current_offset
+                word_directives.append(f'    .org {current_offset + gap_size}')
+
+            # Calculate how many bytes of this word are within code_end
+            # This prevents extracting padding bytes beyond the actual code
+            bytes_in_word = min(8, code_end - word_addr)
+
+            # Emit bytes from this word as appropriate directives
+            byte_offset = 0
+            while byte_offset < bytes_in_word:
+                if byte_offset + 4 <= bytes_in_word:
+                    # Emit a 4-byte word
+                    w = (word >> (byte_offset * 8)) & 0xFFFFFFFF
+                    word_directives.append(f'    .word 0x{w:08x}')
+                    byte_offset += 4
+                    current_offset += 4
+                elif byte_offset + 2 <= bytes_in_word:
+                    # Emit a 2-byte halfword (compressed instruction)
+                    h = (word >> (byte_offset * 8)) & 0xFFFF
+                    word_directives.append(f'    .2byte 0x{h:04x}')
+                    byte_offset += 2
+                    current_offset += 2
+                else:
+                    # Single byte
+                    byte_val = (word >> (byte_offset * 8)) & 0xFF
+                    word_directives.append(f'    .byte 0x{byte_val:02x}')
+                    byte_offset += 1
+                    current_offset += 1
+
+            # Align to next 8-byte boundary after processing this word
+            current_offset = expected_offset + 8
 
     user_code = '\n'.join(word_directives)
 
