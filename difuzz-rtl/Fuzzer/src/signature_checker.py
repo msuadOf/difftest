@@ -183,17 +183,14 @@ class sigChecker():
         csr_match = True
         data_match = True
 
-        # Get mcause values to determine if exception occurred
+        # Get mcause values to determine exception type
         isa_mcause = isa_csr_vals.get('mcause', 0)
         rtl_mcause = rtl_csr_vals.get('mcause', 0)
 
-        # For programs that terminate via the signature dump path (normal ecall exit or
-        # exception handling), trap CSRs (mcause, mepc, mtval) are unstable between Spike
-        # and RTL due to differences in trap handler execution path and timing. Skip comparing
-        # these CSRs to avoid false mismatches for normal program termination.
-        #
-        # Note: We still compare all other CSRs and registers to detect real bugs.
-        skip_trap_csrs = True  # Always skip trap CSRs for signature-based comparison
+        # Exception code is in low 8 bits (bit 7 is interrupt flag)
+        isa_exc_code = isa_mcause & 0xFF
+        rtl_exc_code = rtl_mcause & 0xFF
+        same_exception_type = (isa_exc_code == rtl_exc_code)
 
         for (i, val) in enumerate(zip(isa_xreg_vals, rtl_xreg_vals)):
             match = (val[0] == val[1])
@@ -238,15 +235,23 @@ class sigChecker():
             else:
                 match = (isa_val == rtl_val)
 
-                # Skip trap CSRs (mcause, mepc, mtval) for signature-based comparison
-                # These CSRs are unstable between Spike and RTL due to differences in
-                # trap handler execution path and timing.
-                if skip_trap_csrs and csr_name in ['mcause', 'mepc', 'mtval']:
+                # Special handling for trap CSRs (mcause, mepc, mtval):
+                # - If exception types differ (different mcause exception codes), report mcause mismatch
+                # - If exception types match, skip mepc/mtval comparison (timing-dependent values)
+                if csr_name == 'mcause' and not same_exception_type:
+                    # Different exception types - this is a real bug, report it
+                    if not match: csr_match = False
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                     format(csr_name, isa_val, rtl_val), not match)
+                elif csr_name in ['mepc', 'mtval'] and same_exception_type:
+                    # Same exception type - skip mepc/mtval comparison
+                    # These values are unstable between Spike and RTL due to timing differences
                     continue
-
-                if not match: csr_match = False
-                self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                                 format(csr_name, isa_val, rtl_val), not match)
+                else:
+                    # Normal comparison for other CSRs, or mcause when exception types match
+                    if not match: csr_match = False
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                     format(csr_name, isa_val, rtl_val), not match)
 
         for i in range(6): # TODO, max_sections = 6
             data_start = data_symbols[i][0]

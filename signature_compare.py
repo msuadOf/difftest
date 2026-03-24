@@ -116,6 +116,7 @@ class SignatureComparer:
             'xreg_mismatches': 0,
             'freg_mismatches': 0,
             'csr_mismatches': 0,
+            'data_mismatches': 0,
         }
 
         # Read ISA signature
@@ -166,6 +167,14 @@ class SignatureComparer:
         result['mismatches'].extend(csr_result['mismatches'])
 
         if result['csr_mismatches'] > 0:
+            result['match'] = False
+
+        # Compare _random_data* sections if symbols exist
+        data_result = self._compare_data_sections(isa_values, rtl_values)
+        result['data_mismatches'] = data_result['data_mismatches']
+        result['mismatches'].extend(data_result['mismatches'])
+
+        if result['data_mismatches'] > 0:
             result['match'] = False
 
         return result
@@ -272,6 +281,57 @@ class SignatureComparer:
             'mismatches': mismatches,
         }
 
+    def _compare_data_sections(self, isa_values, rtl_values):
+        """Compare _random_data* sections."""
+        sig_start = self.symbols['begin_signature']
+
+        mismatches = []
+        data_mismatches = 0
+
+        # Compare up to 6 _random_data sections
+        for i in range(6):
+            data_start_sym = f'_random_data{i}'
+            data_end_sym = f'_end_data{i}'
+
+            if data_start_sym not in self.symbols or data_end_sym not in self.symbols:
+                continue
+
+            data_start = self.symbols[data_start_sym]
+            data_end = self.symbols[data_end_sym]
+
+            # Calculate offset and size
+            offset = (data_start - sig_start) // 8
+            size_bytes = data_end - data_start
+            size_words = size_bytes // 8
+
+            # Check bounds
+            if offset + size_words > len(isa_values) or offset + size_words > len(rtl_values):
+                continue
+
+            # Compare each 64-bit word
+            section_mismatches = 0
+            for j in range(size_words):
+                idx = offset + j
+                isa_val = isa_values[idx]
+                rtl_val = rtl_values[idx]
+
+                if isa_val != rtl_val:
+                    section_mismatches += 1
+                    addr = data_start + 8 * j
+                    mismatches.append(
+                        f"data{i}[+0x{j*2:x}]: ISA=0x{isa_val:016x}, RTL=0x{rtl_val:016x} @ 0x{addr:x}"
+                    )
+
+            if section_mismatches > 0:
+                data_mismatches += section_mismatches
+                if self.debug:
+                    print(f"  _random_data{i}: {section_mismatches}/{size_words} words mismatch")
+
+        return {
+            'data_mismatches': data_mismatches,
+            'mismatches': mismatches,
+        }
+
     def print_report(self, result):
         """Print a human-readable comparison report."""
         if result['isa_only']:
@@ -285,6 +345,7 @@ class SignatureComparer:
             print(f"    X register mismatches: {result['xreg_mismatches']}")
             print(f"    F register mismatches: {result['freg_mismatches']}")
             print(f"    CSR mismatches: {result['csr_mismatches']}")
+            print(f"    Data section mismatches: {result['data_mismatches']}")
 
             if self.debug and result['mismatches']:
                 print("  Detailed mismatches:")
