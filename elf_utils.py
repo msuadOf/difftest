@@ -330,18 +330,19 @@ def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
     max_addr = max(memory.keys())
 
     # Start serialization from _start (not min_addr) to preserve RTLSim's layout
-    # If PT_LOAD segments exist below _start, they won't be loaded by RTLSim anyway
+    # IMPORTANT: Do NOT round down serialize_start!
+    # RTLSim loads lines[i] to _start + i * 8, so lines[0] must be data for _start
+    # If we rounded down, lines[0] would be misaligned with _start.
     serialize_start = _start
-
-    # Align to 8-byte boundaries
-    serialize_start = serialize_start & ~0x7
     max_addr = ((max_addr + 7) & ~0x7) + 8  # Round up to next 8-byte boundary
 
     # Emit hex format from serialize_start to max_addr in 8-byte increments
     lines = []
     for addr in range(serialize_start, max_addr, 8):
         # Get value from memory dict, default to 0 for gaps/unmapped regions
-        value = memory.get(addr, 0)
+        # The memory dict stores data at 8-byte aligned addresses
+        aligned_addr = addr & ~0x7
+        value = memory.get(aligned_addr, 0)
         lines.append(f'{value:016x}')
 
     with open(output_hex_path, 'w') as f:

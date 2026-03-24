@@ -162,20 +162,28 @@ class rvRTLhost():
             memory[addr] = 0
 
         data = rtl_input.data
-        data_addrs = []
-        offset = 0
-        for n in range(6):
-            data_start = symbols['_random_data{}'.format(n)]
-            data_end = symbols['_end_data{}'.format(n)]
-            data_addrs.append((data_start, data_end))
+        # Check if this is a pre-instrumented ELF with data_addrs
+        if hasattr(rtl_input, 'data_addrs') and rtl_input.data_addrs:
+            # Pre-instrumented ELF: restore data at original addresses
+            for addr, value in rtl_input.data_addrs:
+                memory[addr] = value
+            self.debug_print(f'[RTLHost] Loaded {len(rtl_input.data_addrs)} data words at original addresses')
+        else:
+            # Wrapped ELF: use _random_data sections
+            data_addrs = []
+            offset = 0
+            for n in range(6):
+                data_start = symbols['_random_data{}'.format(n)]
+                data_end = symbols['_end_data{}'.format(n)]
+                data_addrs.append((data_start, data_end))
 
-            for i, addr in enumerate(range(data_start // 8 * 8, data_end // 8 * 8, 8)):
-                word = data[i + offset]
-                memory[addr] = word
+                for i, addr in enumerate(range(data_start // 8 * 8, data_end // 8 * 8, 8)):
+                    word = data[i + offset]
+                    memory[addr] = word
 
-            offset += (data_end - data_start) // 8
+                offset += (data_end - data_start) // 8
 
-        self.debug_print(f'[RTLHost] Loaded {len(data)} data words')
+            self.debug_print(f'[RTLHost] Loaded {len(data)} data words to _random_data sections')
 
         ints = {}
         if assert_intr:
