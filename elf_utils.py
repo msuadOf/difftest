@@ -498,14 +498,26 @@ def get_text_section_end(elf_path):
     if result.returncode != 0:
         return None
 
+    # Merge continuation lines (GNU readelf -S prints section headers over two lines)
+    merged_lines = []
+    for line in result.stdout.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Check if this is a continuation line (starts with spaces but no '[')
+        if line and line[0].isspace() and '[' not in stripped and merged_lines:
+            merged_lines[-1] = merged_lines[-1] + ' ' + stripped
+        else:
+            merged_lines.append(stripped)
+
     max_end = None
 
-    for line in result.stdout.split('\n'):
+    for line in merged_lines:
         # Check if this line contains a .text* section
         # We match sections that start with '.text' and are PROGBITS with ALLOC + EXECUTE flags
         if '.text' in line and 'PROGBITS' in line and ('AX' in line or 'XA' in line):
             # Format: [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
-            # Example: [ 1] .text.init PROGBITS 80000000 001000 00044c 00 AX 0 0 64
+            # Example (merged): [ 1] .text.init PROGBITS 80000000 001000 00044c 00 AX 0 0 64
             parts = line.split()
             if len(parts) >= 6:
                 try:
