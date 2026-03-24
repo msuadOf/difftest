@@ -74,6 +74,17 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
     with open(config_path, 'w') as f:
         json.dump(config, f)
 
+    # Check if build directory exists (to determine if we need to compile)
+    sim_build_dir = os.path.join(fuzzer_dir, 'sim_build')
+    needs_compile = not os.path.exists(os.path.join(sim_build_dir, 'Vtop'))
+
+    # Adjust timeout for clean builds (compilation takes time)
+    # Use a minimum of 10 minutes for clean builds, otherwise use specified timeout
+    if needs_compile:
+        actual_timeout = max(timeout, 600)  # At least 10 minutes for clean builds
+    else:
+        actual_timeout = timeout
+
     try:
         # Set up environment variables for cocotb
         env = os.environ.copy()
@@ -119,7 +130,7 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
             make_cmd,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=actual_timeout,
             env=env,
             cwd=fuzzer_dir
         )

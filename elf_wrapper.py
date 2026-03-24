@@ -101,16 +101,22 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
 
     # Collect code bytes (up to code_end, which is the actual .text section end)
     # This excludes .data, .rodata, and .bss sections
+    # IMPORTANT: Only copy mapped bytes, do NOT fill gaps with zeros!
+    # This preserves sparse .text layouts where sections are not contiguous.
+    # For example, .text.init at 0x80000000 and .text at 0x80001000 should
+    # maintain that gap, not be filled with zero instructions.
     raw_bytes = bytearray()
-    for addr in range(start, code_end):
-        # Calculate the 8-byte aligned address for this byte
-        word_addr = addr & ~0x7  # Clear lowest 3 bits to align to 8 bytes
+
+    # Iterate through 8-byte aligned memory words that contain code
+    # This preserves the original layout and doesn't inject zeros into gaps
+    for word_addr in range(start & ~0x7, code_end, 8):
         if word_addr in memory:
             word = memory[word_addr]
-            byte_offset = addr - word_addr
-            raw_bytes.append((word >> (byte_offset * 8)) & 0xFF)
-        else:
-            raw_bytes.append(0)
+            # Extract all 8 bytes of this word
+            for byte_offset in range(8):
+                raw_bytes.append((word >> (byte_offset * 8)) & 0xFF)
+        # Note: We do NOT add zeros for unmapped addresses
+        # This preserves the sparse layout of the original ELF
 
     # Generate instruction directives from raw bytes
     # IMPORTANT: Do NOT pad to 4-byte alignment!
