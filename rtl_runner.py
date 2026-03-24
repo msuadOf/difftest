@@ -71,6 +71,11 @@ def run_rtl_simulation(rtl_input, rtl_sig_path, vfile='RocketTile_state',
         'debug': debug,
     }
 
+    # Include data_addrs for pre-instrumented ELFs
+    # This allows restoring data at original addresses instead of _random_data sections
+    if hasattr(rtl_input, 'data_addrs') and rtl_input.data_addrs:
+        config['data_addrs'] = rtl_input.data_addrs
+
     with open(config_path, 'w') as f:
         json.dump(config, f)
 

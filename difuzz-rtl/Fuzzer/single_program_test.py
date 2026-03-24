@@ -43,12 +43,22 @@ def get_rtl_input_from_env():
             with open(config_path) as f:
                 config = json.load(f)
 
-            return rtlInput(
+            # Reconstruct rtlInput with all fields, including data_addrs
+            # data_addrs is needed for pre-instrumented ELFs to restore data at original addresses
+            data_addrs = config.get('data_addrs', [])
+
+            class rtlInputWithDataAddrs(rtlInput):
+                def __init__(self, hexfile, intrfile, data, symbols, max_cycles, data_addrs=None):
+                    super().__init__(hexfile, intrfile, data, symbols, max_cycles)
+                    self.data_addrs = data_addrs if data_addrs is not None else []
+
+            return rtlInputWithDataAddrs(
                 hexfile=config.get('hexfile'),
                 intrfile=config.get('intrfile'),
                 data=config.get('data', []),
                 symbols=config.get('symbols', {}),
-                max_cycles=config.get('max_cycles', 10000)
+                max_cycles=config.get('max_cycles', 10000),
+                data_addrs=data_addrs
             )
         except Exception as e:
             print(f"Error loading RTL config from {config_path}: {e}")

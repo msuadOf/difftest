@@ -98,13 +98,15 @@ def _get_section_headers(elf_path):
         #      000142 00000000  AX  0   0 64
 
         parts = line.split()
-        if len(parts) >= 6 and parts[0].startswith('['):
+        # Section header lines start with '['
+        if len(parts) >= 2 and parts[0] == '[':
             # Check if this is a two-line format
-            # Two-line format has exactly 5 columns in the first line
+            # Two-line format has exactly 5 columns in the first line after split
             if len(parts) == 5:
                 # First line: [Nr] Name Type Addr Off
-                section_name = parts[1]
-                addr_str = parts[3]
+                # parts[0] = '[', parts[1] = '1]', parts[2] = section_name, parts[3] = type, parts[4] = addr
+                section_name = parts[2]
+                addr_str = parts[4]
                 # Second line has Size, ES, Flg, Lk, Inf, Al
                 if i + 1 < len(lines):
                     next_parts = lines[i + 1].split()
@@ -120,13 +122,19 @@ def _get_section_headers(elf_path):
                             pass
                 i += 2
                 continue
-            else:
+            elif len(parts) >= 7:
                 # Single line format: all columns in one line
-                # [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
-                section_name = parts[1]
-                addr_str = parts[3]
-                size_str = parts[5]
-                flags = parts[7] if len(parts) > 7 else ''
+                # parts[0] = '[', parts[1] = '1]', parts[2] = section_name, parts[3] = type, parts[4] = addr, parts[5] = off, parts[6] = size, ...
+                section_name = parts[2]
+                addr_str = parts[4]
+                size_str = parts[6]
+                # Flags are typically at parts[8] or later
+                # Find the flags field (contains 'A' for allocated, 'X' for executable, etc.)
+                flags = ''
+                for j in range(7, min(len(parts), 12)):
+                    if 'A' in parts[j] or 'X' in parts[j] or 'W' in parts[j]:
+                        flags = parts[j]
+                        break
                 try:
                     addr = int(addr_str, 16)
                     size = int(size_str, 16)
