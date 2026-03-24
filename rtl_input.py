@@ -29,7 +29,8 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
 
     # Extract data words from the _random_data sections
     # The data sections are populated from the original ELF's data sections
-    data = _extract_data_words_from_symbols(symbols, hex_file=wrapped_hex_path)
+    # Pass wrapped_elf_path directly to avoid path reconstruction issues
+    data = _extract_data_words_from_symbols(symbols, elf_path=wrapped_elf_path)
 
     # Create rtlInput object (simple class for compatibility)
     class rtlInput:
@@ -49,7 +50,7 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
     )
 
 
-def _extract_data_words_from_symbols(symbols, hex_file=None):
+def _extract_data_words_from_symbols(symbols, elf_path=None):
     """
     Extract data words from the _random_data symbols in the wrapped ELF.
 
@@ -59,7 +60,7 @@ def _extract_data_words_from_symbols(symbols, hex_file=None):
 
     Args:
         symbols: Symbol dictionary from the wrapped ELF
-        hex_file: Optional path to the wrapped hex file for reading actual data
+        elf_path: Path to the wrapped ELF file for reading actual data
 
     Returns:
         List of 64-bit integers representing the data words
@@ -68,31 +69,28 @@ def _extract_data_words_from_symbols(symbols, hex_file=None):
 
     data_words = []
 
-    # If we have the hex file, we can extract the actual data values
-    if hex_file and os.path.isfile(hex_file):
+    # If we have the ELF path, we can extract the actual data values
+    if elf_path and os.path.isfile(elf_path):
         try:
             # Load the wrapped ELF to get the actual memory contents
-            # We need to find the wrapped ELF path (same stem as hex file)
-            elf_path = os.path.splitext(hex_file)[0] + '.elf'
-            if os.path.isfile(elf_path):
-                memory = elf_to_memory_dict(elf_path)
+            memory = elf_to_memory_dict(elf_path)
 
-                for i in range(6):
-                    data_start_sym = f'_random_data{i}'
-                    data_end_sym = f'_end_data{i}'
+            for i in range(6):
+                data_start_sym = f'_random_data{i}'
+                data_end_sym = f'_end_data{i}'
 
-                    if data_start_sym in symbols and data_end_sym in symbols:
-                        data_start = symbols[data_start_sym]
-                        data_end = symbols[data_end_sym]
+                if data_start_sym in symbols and data_end_sym in symbols:
+                    data_start = symbols[data_start_sym]
+                    data_end = symbols[data_end_sym]
 
-                        # Extract data words from memory, 8-byte aligned
-                        addr = data_start & ~0x7  # Align down to 8 bytes
-                        end_addr = data_end
+                    # Extract data words from memory, 8-byte aligned
+                    addr = data_start & ~0x7  # Align down to 8 bytes
+                    end_addr = data_end
 
-                        while addr < end_addr:
-                            if addr in memory:
-                                data_words.append(memory[addr])
-                            addr += 8
+                    while addr < end_addr:
+                        if addr in memory:
+                            data_words.append(memory[addr])
+                        addr += 8
         except Exception as e:
             # If extraction fails, fall back to placeholder
             pass

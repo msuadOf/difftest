@@ -1164,8 +1164,8 @@ def get_spike_memory_map(elf_path, symbols=None):
 
     # Parse PT_LOAD segments
     # GNU readelf -l has two formats:
-    # 1. Single-line: LOAD 0x001000 0x00001000 0x00001000 0x00788 0x00788 RWE 0x1000
-    # 2. Multi-line:
+    # 1. Single-line (ELF32): LOAD 0x001000 0x00001000 0x00001000 0x00788 0x00788 RWE 0x1000
+    # 2. Multi-line (ELF64):
     #    LOAD           0x0000000000001000 0x0000000000001000 0x0000000000001000
     #                   0x000000000000054c 0x000000000000054c  R E    0x1000
     pending_vaddr = None
@@ -1175,20 +1175,25 @@ def get_spike_memory_map(elf_path, symbols=None):
             # Try to parse single-line format first
             parts = stripped.split()
             if len(parts) >= 6:
+                # Single-line format: all fields on one line
+                # Index 1=Offset, 2=VirtAddr, 3=PhysAddr, 4=FileSiz, 5=MemSiz
                 try:
-                    # Check if we have all fields on one line (Offset, VirtAddr, PhysAddr, FileSiz, MemSiz)
-                    # Index 1=Offset, 2=VirtAddr, 3=PhysAddr, 4=FileSiz, 5=MemSiz
                     vaddr = int(parts[2], 16)  # VirtAddr is at index 2
                     memsz = int(parts[5], 16)  # MemSiz is at index 5
                     load_segments.append((vaddr, memsz))
                     pending_vaddr = None
                     continue
                 except (ValueError, IndexError):
-                    # Single-line parse failed, might be multi-line format
-                    try:
-                        pending_vaddr = int(parts[2], 16)  # Store VirtAddr, wait for next line for MemSiz
-                    except (ValueError, IndexError):
-                        pending_vaddr = None
+                    pass
+            # Check for multi-line format (ELF64): first line has LOAD, Offset, VirtAddr, PhysAddr
+            # Format: LOAD 0x...offset 0x...vaddr 0x...paddr (4 parts minimum)
+            if len(parts) >= 3:
+                try:
+                    # For multi-line format, parts[1] is VirtAddr
+                    pending_vaddr = int(parts[1], 16)  # Store VirtAddr, wait for next line for MemSiz
+                    continue
+                except (ValueError, IndexError):
+                    pending_vaddr = None
         elif pending_vaddr is not None and stripped:
             # Second line of multi-line format: contains FileSiz and MemSiz
             # Format: 0x000000000000054c 0x000000000000054c  R E    0x1000
