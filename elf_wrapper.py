@@ -108,6 +108,11 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
     word_directives = []
     base_addr = start & ~0x7  # 8-byte aligned base address
     current_offset = 0  # Current offset from base_addr in bytes
+    first_word = True  # Track if we're processing the first word
+
+    # Calculate the offset of start within the first 8-byte word
+    # elf_to_memory_dict pads with zeros at the beginning when start is not 8-byte aligned
+    start_offset_in_word = start - base_addr  # 0-7
 
     # Iterate through 8-byte aligned memory words that contain code
     for word_addr in range(base_addr, code_end, 8):
@@ -126,8 +131,15 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
             # This prevents extracting padding bytes beyond the actual code
             bytes_in_word = min(8, code_end - word_addr)
 
+            # For the first word, skip the padding bytes that elf_to_memory_dict added
+            # For subsequent words, start from byte 0
+            if first_word:
+                byte_offset = start_offset_in_word
+                first_word = False
+            else:
+                byte_offset = 0
+
             # Emit bytes from this word as appropriate directives
-            byte_offset = 0
             while byte_offset < bytes_in_word:
                 if byte_offset + 4 <= bytes_in_word:
                     # Emit a 4-byte word

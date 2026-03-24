@@ -27,10 +27,13 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
     if not os.path.isfile(wrapped_hex_path):
         raise FileNotFoundError(f"Hex file not found: {wrapped_hex_path}")
 
-    # Extract data words from the _random_data sections
-    # The data sections are populated from the original ELF's data sections
-    # Pass wrapped_elf_path directly to avoid path reconstruction issues
-    data = _extract_data_words_from_symbols(symbols, elf_path=wrapped_elf_path)
+    # Check if this is a pre-instrumented ELF (has begin_signature symbol)
+    is_preinstrumented = 'begin_signature' in symbols
+
+    # Extract data words from the _random_data sections (for wrapped ELFs)
+    # and from ordinary .data/.rodata sections (for pre-instrumented ELFs)
+    data = _extract_data_words_from_symbols(symbols, elf_path=wrapped_elf_path,
+                                            is_preinstrumented=is_preinstrumented)
 
     # Create rtlInput object (simple class for compatibility)
     class rtlInput:
@@ -50,17 +53,17 @@ def build_rtl_input_bundle(wrapped_elf_path, wrapped_hex_path, symbols,
     )
 
 
-def _extract_data_words_from_symbols(symbols, elf_path=None):
+def _extract_data_words_from_symbols(symbols, elf_path=None, is_preinstrumented=False):
     """
-    Extract data words from the _random_data symbols in the wrapped ELF.
+    Extract data words from the ELF for RTL simulation.
 
-    The wrapper populates _random_data0..5 sections with data from the
-    original ELF's .data/.rodata sections. This function extracts those
-    data words as a flat list of 64-bit integers.
+    For wrapped ELFs: extracts from _random_data0..5 sections.
+    For pre-instrumented ELFs: also extracts from ordinary .data/.rodata sections.
 
     Args:
-        symbols: Symbol dictionary from the wrapped ELF
-        elf_path: Path to the wrapped ELF file for reading actual data
+        symbols: Symbol dictionary from the ELF
+        elf_path: Path to the ELF file for reading actual data
+        is_preinstrumented: True if this is a pre-instrumented ELF (has begin_signature)
 
     Returns:
         List of 64-bit integers representing the data words
@@ -72,9 +75,41 @@ def _extract_data_words_from_symbols(symbols, elf_path=None):
     # If we have the ELF path, we can extract the actual data values
     if elf_path and os.path.isfile(elf_path):
         try:
-            # Load the wrapped ELF to get the actual memory contents
+            # Load the ELF to get the actual memory contents
             memory = elf_to_memory_dict(elf_path)
 
+            if is_preinstrumented:
+                # For pre-instrumented ELFs, extract from ordinary data sections
+                # Look for .data, .rodata, .sdata, .srodata sections
+                data_section_names = ['.data', '.rodata', '.sdata', '.srodata']
+                for section_name in data_section_names:
+                    if section_name in symbols:
+                        # Find the end of this section
+                        # Try common end symbols first
+                        end_sym = section_name.replace('.data', '_edata')
+                        end_sym_alt = section_name.replace('.data', '_end')
+                        if end_sym in symbols:
+                            section_end = symbols[end_sym]
+                        elif end_sym_alt in symbols:
+                            section_end = symbols[end_sym_alt]
+                        else:
+                            # No explicit end symbol, estimate from next symbol
+                            # or use a reasonable maximum size
+                            section_start = symbols[section_name]
+                            section_end = section_start + 0x1000  # Conservative estimate
+
+                        section_start = symbols[section_name]
+
+                        # Extract data words from memory, 8-byte aligned
+                        addr = section_start & ~0x7  # Align down to 8 bytes
+                        end_addr = (section_end + 7) & ~0x7  # Round up to 8 bytes
+
+                        while addr < end_addr:
+                            if addr in memory:
+                                data_words.append(memory[addr])
+                            addr += 8
+
+            # Always extract from _random_data sections (for wrapped ELFs)
             for i in range(6):
                 data_start_sym = f'_random_data{i}'
                 data_end_sym = f'_end_data{i}'

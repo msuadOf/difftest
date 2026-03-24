@@ -252,13 +252,20 @@ class sigChecker():
                 #   - For other exceptions, compare mepc/mtval (distinguishes trap location)
                 if self.wrapped_elf and csr_name in ['mcause', 'mepc', 'mtval']:
                     # Wrapped ELF - check if this is an ecall exit (normal termination)
-                    is_ecall_exit = (isa_exc_code in [8, 11] and rtl_exc_code in [8, 11])
+                    # ECALL has cause code 8 (user) or 11 (machine) WITHOUT interrupt flag set
+                    # Machine external interrupts also use code 11 but have interrupt flag set
+                    is_ecall_exit = (
+                        isa_exc_code in [8, 11] and
+                        rtl_exc_code in [8, 11] and
+                        not isa_interrupt and
+                        not rtl_interrupt
+                    )
                     if is_ecall_exit:
                         # Ecall exit via wrapper - skip trap CSR comparison
                         # These CSRs reflect the wrapper's ecall mechanism, not payload behavior
                         continue
                     else:
-                        # Payload exception - compare trap CSRs normally
+                        # Payload exception or interrupt - compare trap CSRs normally
                         # This catches real bugs where Spike and RTL raise different exceptions
                         if not match: csr_match = False
                         self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
