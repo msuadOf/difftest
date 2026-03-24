@@ -418,16 +418,27 @@ def get_elf_isa_width(elf_path):
         raise FileNotFoundError(f"ELF file not found: {elf_path}")
 
     # Use readelf to get ELF header information
-    result = subprocess.run(
-        ['riscv64-unknown-elf-readelf', '-h', elf_path],
-        capture_output=True, text=True
-    )
+    # Try riscv64-unknown-elf-readelf first, then fall back to system readelf
+    try:
+        result = subprocess.run(
+            ['riscv64-unknown-elf-readelf', '-h', elf_path],
+            capture_output=True, text=True,
+            check=False  # Don't raise exception on non-zero exit
+        )
+    except FileNotFoundError:
+        # riscv64-unknown-elf-readelf not found, try system readelf
+        result = subprocess.run(
+            ['readelf', '-h', elf_path],
+            capture_output=True, text=True,
+            check=False
+        )
 
-    # Fallback to system readelf
+    # If riscv64-unknown-elf-readelf failed, try system readelf as fallback
     if result.returncode != 0:
         result = subprocess.run(
             ['readelf', '-h', elf_path],
-            capture_output=True, text=True
+            capture_output=True, text=True,
+            check=False
         )
 
     if result.returncode != 0:

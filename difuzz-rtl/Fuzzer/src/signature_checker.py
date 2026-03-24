@@ -43,16 +43,17 @@ class sigChecker():
 
         Returns (normalized_isa_val, normalized_rtl_val)
         """
-        # Use explicit ISA width if provided
+        # Use explicit ISA width - isa_width must always be provided
         if self.isa_width == 'rv64':
             is_rv64 = True
         elif self.isa_width == 'rv32':
             is_rv64 = False
         else:
-            # Fallback to value-based detection for backward compatibility
-            # This path is taken when isa_width is not explicitly provided
-            max_val = max(isa_val, rtl_val)
-            is_rv64 = max_val > 0xFFFFFFFF or (max_val >> 63) & 1
+            # isa_width was not provided - this is a programming error
+            raise ValueError(
+                f"isa_width must be provided to sigChecker (got: {self.isa_width}). "
+                f"Please pass isa_width='rv32' or isa_width='rv64' when instantiating sigChecker."
+            )
 
         if is_rv64:
             # RV64: clear bit 63 (SD bit position)
@@ -229,26 +230,13 @@ class sigChecker():
             else:
                 match = (isa_val == rtl_val)
 
-                # Special handling for exception CSRs (mcause, mepc, mtval):
-                # For wrapped programs: Skip ALL exception CSR comparisons
-                # Reason: The wrapper uses mret to enter user code, and the exit mechanism is complex.
-                # Spike and RTL may handle the trap/exit differently, but this doesn't affect
-                # the correctness of the actual user code execution.
-                # For direct (pre-instrumented) ELFs: Compare normally to detect trap/exception bugs
-                if csr_name in ['mcause', 'mepc', 'mtval'] and self.wrapped_elf:
-                    # Wrapped programs: Always skip exception CSR comparison
-                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: wrapped ELF)'. \
-                                     format(csr_name, isa_val, rtl_val), False)
-                    continue
-                elif csr_name in ['mcause', 'mepc', 'mtval'] and not self.wrapped_elf:
-                    # Direct ELFs: Compare exception CSRs normally to detect trap/exception bugs
-                    if not match: csr_match = False
-                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                                     format(csr_name, isa_val, rtl_val), not match)
-                else:
-                    if not match: csr_match = False
-                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
-                                     format(csr_name, isa_val, rtl_val), not match)
+                # Compare all CSRs normally, including exception CSRs (mcause, mepc, mtval)
+                # This ensures trap/exception handling bugs are detected for both wrapped
+                # and direct ELFs. The wrapped_elf flag is kept for potential future use
+                # but no longer affects CSR comparison behavior.
+                if not match: csr_match = False
+                self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                 format(csr_name, isa_val, rtl_val), not match)
 
         for i in range(6): # TODO, max_sections = 6
             data_start = data_symbols[i][0]

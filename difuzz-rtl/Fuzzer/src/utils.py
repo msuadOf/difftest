@@ -106,6 +106,8 @@ def setup(dut, toplevel, template, out, proc_num, debug, minimizing=False, no_gu
     isaHost = rvISAhost(spike, spike_arg, isa_sigfile)
     rtlHost = rvRTLhost(dut, toplevel, rtl_sigfile, debug=debug)
 
-    checker = sigChecker(isa_sigfile, rtl_sigfile, debug, minimizing)
+    # DifuzzRTL generates RV64G tests by default (see inst_generator.py:15, mutator.py:112)
+    # Always pass isa_width='rv64' to ensure correct CSR normalization
+    checker = sigChecker(isa_sigfile, rtl_sigfile, debug, minimizing, isa_width='rv64')
 
     return (mutator, preprocessor, isaHost, rtlHost, checker)
