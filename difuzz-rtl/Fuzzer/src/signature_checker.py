@@ -237,16 +237,26 @@ class sigChecker():
 
                 # Special handling for trap CSRs (mcause, mepc, mtval):
                 # - If exception types differ (different mcause exception codes), report mcause mismatch
-                # - If exception types match, skip mepc/mtval comparison (timing-dependent values)
+                # - If exception types match:
+                #   - For ecall exits (mcause=8 or 11), skip mepc/mtval (timing-dependent in trap handler)
+                #   - For other exceptions, compare mepc/mtval (distinguishes correct vs incorrect trap location)
                 if csr_name == 'mcause' and not same_exception_type:
                     # Different exception types - this is a real bug, report it
                     if not match: csr_match = False
                     self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
                                      format(csr_name, isa_val, rtl_val), not match)
                 elif csr_name in ['mepc', 'mtval'] and same_exception_type:
-                    # Same exception type - skip mepc/mtval comparison
-                    # These values are unstable between Spike and RTL due to timing differences
-                    continue
+                    # Check if this is an ecall exit (normal termination)
+                    is_ecall_exit = (isa_exc_code in [8, 11])
+                    if is_ecall_exit:
+                        # Ecall exit - skip mepc/mtval comparison (timing-dependent)
+                        continue
+                    else:
+                        # Other exception (access error, illegal instruction, etc.)
+                        # Compare mepc/mtval to ensure we trapped at the correct location
+                        if not match: csr_match = False
+                        self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x}'. \
+                                         format(csr_name, isa_val, rtl_val), not match)
                 else:
                     # Normal comparison for other CSRs, or mcause when exception types match
                     if not match: csr_match = False

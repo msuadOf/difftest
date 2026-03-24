@@ -80,18 +80,22 @@ def generate_wrapper_asm(elf_path, output_asm_path=None):
 
     start = symbols.get('_start', DRAM_BASE)
 
-    # Get the actual end of the .text section from ELF section headers
-    # This is the authoritative source for where executable code ends
-    text_end = get_text_section_end(elf_path)
-
-    if text_end is not None:
-        code_end = text_end
+    # Determine where user code ends
+    # Priority: _end_main symbol > actual code content > .text section end
+    # _end_main is preferred because it marks the actual end of user code,
+    # excluding any alignment padding that may be at the end of .text section
+    if '_end_main' in symbols:
+        code_end = symbols['_end_main']
+    elif memory:
+        # Scan memory to find the last non-zero instruction
+        # This handles cases where _end_main doesn't exist but we have code
+        max_addr = max(addr for addr in memory.keys() if addr >= start and addr < start + 0x100000)
+        code_end = max_addr + 8
     else:
-        # Fallback: use _end_main if available, otherwise estimate
-        if '_end_main' in symbols:
-            code_end = symbols['_end_main']
-        elif memory:
-            code_end = max(memory.keys()) + 8
+        # Last resort: use .text section end (may include padding)
+        text_end = get_text_section_end(elf_path)
+        if text_end is not None:
+            code_end = text_end
         else:
             code_end = start + 0x1000
 
