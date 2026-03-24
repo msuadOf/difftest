@@ -37,7 +37,7 @@ except ImportError:
                     result = value
             return result
         return async_wrapper
-    import functools
+import functools
 from RTLSim.host import ILL_MEM, SUCCESS, TIME_OUT, ASSERTION_FAIL
 
 from src.utils import *

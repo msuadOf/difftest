@@ -312,17 +312,24 @@ def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
     Returns:
         output_hex_path (for chaining)
 
-    The emitted format is one 64-bit hex value per line, covering the range
-    from _start to _end_main + 36 (the +36 buffer is for post-code data
-    like the signature writeout routine).
+    The emitted format is one 64-bit hex value per line, covering the entire
+    loaded memory range from the minimum address to the maximum address in memory.
+    This ensures all PT_LOAD segments (including .data, .bss, etc.) are serialized.
     """
-    _start = symbols.get('_start', 0x80000000)
-    _end_main = symbols.get('_end_main', _start + 0x1000)
+    if not memory:
+        raise ValueError("Memory dictionary is empty")
 
-    # RTL host loads from _start to _end_main + 36 in 8-byte increments
-    # Range is [start, stop) so we use _end_main + 36 as stop (excluded)
+    # Find the actual range of loaded memory
+    min_addr = min(memory.keys())
+    max_addr = max(memory.keys())
+
+    # Align to 8-byte boundaries
+    min_addr = min_addr & ~0x7
+    max_addr = ((max_addr + 7) & ~0x7) + 8  # Round up to next 8-byte boundary
+
+    # Emit hex format from min_addr to max_addr in 8-byte increments
     lines = []
-    for addr in range(_start, _end_main + 36, 8):
+    for addr in range(min_addr, max_addr, 8):
         # Get value from memory dict, default to 0 for gaps/unmapped regions
         value = memory.get(addr, 0)
         lines.append(f'{value:016x}')
