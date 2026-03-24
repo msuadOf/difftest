@@ -319,17 +319,27 @@ def memory_dict_to_rtl_hex(memory, symbols, output_hex_path):
     if not memory:
         raise ValueError("Memory dictionary is empty")
 
-    # Find the actual range of loaded memory
+    # Get _start and _end_main from symbols for layout calculation
+    _start = symbols.get('_start', DRAM_BASE)
+    _end_main = symbols.get('_end_main', _start + 0x1000)
+
+    # RTLSim/host.py loads from _start to _end_main + 36, assuming line[0] = _start
+    # We must serialize from _start to preserve this layout assumption
+    # Additionally, serialize any PT_LOAD segments beyond _end_main + 36
     min_addr = min(memory.keys())
     max_addr = max(memory.keys())
 
+    # Start serialization from _start (not min_addr) to preserve RTLSim's layout
+    # If PT_LOAD segments exist below _start, they won't be loaded by RTLSim anyway
+    serialize_start = _start
+
     # Align to 8-byte boundaries
-    min_addr = min_addr & ~0x7
+    serialize_start = serialize_start & ~0x7
     max_addr = ((max_addr + 7) & ~0x7) + 8  # Round up to next 8-byte boundary
 
-    # Emit hex format from min_addr to max_addr in 8-byte increments
+    # Emit hex format from serialize_start to max_addr in 8-byte increments
     lines = []
-    for addr in range(min_addr, max_addr, 8):
+    for addr in range(serialize_start, max_addr, 8):
         # Get value from memory dict, default to 0 for gaps/unmapped regions
         value = memory.get(addr, 0)
         lines.append(f'{value:016x}')
