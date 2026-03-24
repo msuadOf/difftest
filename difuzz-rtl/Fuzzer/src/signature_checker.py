@@ -230,11 +230,14 @@ class sigChecker():
                 match = (isa_val == rtl_val)
 
                 # Special handling for exception CSRs (mcause, mepc, mtval):
-                # For wrapped programs: Skip comparison due to ecall exit mechanism differences
+                # For wrapped programs: Skip ALL exception CSR comparisons
+                # Reason: The wrapper uses mret to enter user code, and the exit mechanism is complex.
+                # Spike and RTL may handle the trap/exit differently, but this doesn't affect
+                # the correctness of the actual user code execution.
                 # For direct (pre-instrumented) ELFs: Compare normally to detect trap/exception bugs
                 if csr_name in ['mcause', 'mepc', 'mtval'] and self.wrapped_elf:
-                    # Wrapped programs: Skip exception CSR comparison
-                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: wrapped ELF exit mechanism)'. \
+                    # Wrapped programs: Always skip exception CSR comparison
+                    self.debug_print('({:>10}) [ISA] {:016x} || [RTL] {:016x} (skipped: wrapped ELF)'. \
                                      format(csr_name, isa_val, rtl_val), False)
                     continue
                 elif csr_name in ['mcause', 'mepc', 'mtval'] and not self.wrapped_elf:

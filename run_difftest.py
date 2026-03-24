@@ -131,10 +131,21 @@ def run_single_difftest(elf_path, output_dir=None, rtl_sig_file=None, debug=Fals
         wrapped_symbols = symbols
         is_wrapped = False  # This is a direct (pre-instrumented) ELF, not wrapped by us
 
-        # Generate hex file if it doesn't exist
-        if not os.path.isfile(wrapped_hex):
+        # Generate or regenerate hex file
+        # Need to regenerate if: doesn't exist, or is older than the ELF
+        need_hex_gen = not os.path.isfile(wrapped_hex)
+        if not need_hex_gen:
+            # Check modification times - regenerate hex if ELF is newer
+            elf_mtime = os.path.getmtime(wrapped_elf)
+            hex_mtime = os.path.getmtime(wrapped_hex)
+            need_hex_gen = elf_mtime > hex_mtime
+
+        if need_hex_gen:
             if debug:
-                print(f'[Difftest] Generating hex file for instrumented ELF...')
+                if not os.path.isfile(wrapped_hex):
+                    print(f'[Difftest] Generating hex file for instrumented ELF...')
+                else:
+                    print(f'[Difftest] Regenerating hex file (ELF is newer)...')
             try:
                 from elf_utils import elf_to_memory_dict, memory_dict_to_rtl_hex
                 memory_dict = elf_to_memory_dict(wrapped_elf)
@@ -444,6 +455,16 @@ def main():
             else:
                 print(f'No files found matching: {os.path.join(args.progs_dir, args.pattern)}', file=sys.stderr)
             sys.exit(1)
+
+    # Validate --rtl-sig usage for multi-file runs
+    # A single RTL signature file cannot be used for multiple different programs
+    if args.rtl_sig and len(elf_files) > 1:
+        print(f'ERROR: --rtl-sig cannot be used with multiple input files.', file=sys.stderr)
+        print(f'       Found {len(elf_files)} ELF files but only one RTL signature was provided.', file=sys.stderr)
+        print(f'       Either:', file=sys.stderr)
+        print(f'         1. Run without --rtl-sig to generate RTL signatures for each ELF, or', file=sys.stderr)
+        print(f'         2. Specify a separate RTL signature file for each ELF (not currently supported).', file=sys.stderr)
+        sys.exit(1)
 
     # Set up output directory
     output_base = args.output_dir
