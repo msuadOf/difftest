@@ -47,7 +47,7 @@ MODULE=DifuzzRTL
 
 CUSTOM_SIM_DEPS=$(CWD)/Makefile
 
-include $(shell cocotb-config --makefiles)/Makefile.inc
+# include $(shell cocotb-config --makefiles)/Makefile.inc
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
 sim: $(MODULE).py
