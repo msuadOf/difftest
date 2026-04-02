@@ -19,6 +19,24 @@ elif ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     docker start "${CONTAINER_NAME}" >/dev/null
 fi
 
+# docker exec -i "${CONTAINER_NAME}" /bin/bash -lc '
+# (cd /home/host/difftest/difuzz-rtl && ./setup.sh)
+# export PYTHONPATH=$PYTHONPATH:/home/host/difftest/difuzz-rtl/Fuzzer/RTLSim/src
+# export PYTHONPATH=$PYTHONPATH:/home/host/difftest/difuzz-rtl/Fuzzer/src
+# export PYTHONPATH=$PYTHONPATH:/home/host/difftest/difuzz-rtl/Fuzzer
+# export SPIKE=/home/host/difftest/difuzz-rtl/Fuzzer/ISASim/riscv-isa-sim/build/spike
+# export MAKEFLAGS="-j100"
+# alias make="make -j100"
+# export VERILATOR_JOBS=100
+# make -C /home/host/difftest/difuzz-rtl/Fuzzer \
+#      SIM_BUILD=build \
+#      VFILE=SmallBoomTile_v1.2_state \
+#      TOPLEVEL=BoomTile \
+#      NUM_ITER=100 \
+#      OUT=out
+# '
+
+
 docker exec -i "${CONTAINER_NAME}" /bin/bash -lc '
 (cd /home/host/difftest/difuzz-rtl && ./setup.sh)
 export PYTHONPATH=$PYTHONPATH:/home/host/difftest/difuzz-rtl/Fuzzer/RTLSim/src
@@ -28,7 +46,7 @@ export SPIKE=/home/host/difftest/difuzz-rtl/Fuzzer/ISASim/riscv-isa-sim/build/sp
 export MAKEFLAGS="-j100"
 alias make="make -j100"
 export VERILATOR_JOBS=100
-make -C /home/host/difftest/difuzz-rtl/Fuzzer \
+make -C /home/host/difftest/difuzz-rtl/run_difftest \
      SIM_BUILD=build \
      VFILE=SmallBoomTile_v1.2_state \
      TOPLEVEL=BoomTile \
