@@ -5,7 +5,7 @@ CWD=$(shell pwd)
 SIM=verilator
 CMD=verilator
 
-PYTHONPATH := $(CWD)/src:$(CWD)/RTLSim/src:$(PYTHONPATH)
+PYTHONPATH := $(CWD)/../Fuzzer/src:$(CWD)/../Fuzzer/RTLSim/src:$(CWD)/../Fuzzer:$(PYTHONPATH)
 
 TOPLEVEL_LAGN ?= verilog
 
@@ -43,7 +43,7 @@ STOP_COND ?= 0
 COMPILE_ARGS=$(MULTI) $(INCLUDE) -DPRINTF_COND=$(PRINTF_COND) -DSTOP_COND=$(STOP_COND) -Wno-PINMISSING
 PLUSARGS=+DEBUG=$(PRINT) $(PLUSARGS_OUT)
 
-MODULE=DifuzzRTL
+MODULE=run_difftest
 
 CUSTOM_SIM_DEPS=$(CWD)/Makefile
 

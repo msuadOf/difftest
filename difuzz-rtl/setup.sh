@@ -20,3 +20,4 @@ popd > /dev/null
 popd > /dev/null
 
 source env.sh
+pip3 install pyelftools
