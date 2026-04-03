@@ -38,8 +38,12 @@ def isa_timeout(out, stop, proc_num):
     if not os.path.isdir(out + '/isa_timeout'):
         os.makedirs(out + '/isa_timeout')
 
-    shutil.copy(out + '/.input_{}.elf'.format(proc_num), out + '/isa_timeout/timeout.elf')
-    shutil.copy(out + '/.input_{}.S'.format(proc_num), out + '/isa_timeout/timeout.S')
+    elf_path = out + '/.input_{}.elf'.format(proc_num)
+    asm_path = out + '/.input_{}.S'.format(proc_num)
+    if os.path.exists(elf_path):
+        shutil.copy(elf_path, out + '/isa_timeout/timeout.elf')
+    if os.path.exists(asm_path):
+        shutil.copy(asm_path, out + '/isa_timeout/timeout.S')
 
     ps = psutil.Process()
     children = ps.children(recursive=True)
@@ -49,10 +53,10 @@ def isa_timeout(out, stop, proc_num):
 
     stop[0] = proc_state.ERR_ISA_TIMEOUT
 
-def run_isa_test(isaHost, isa_input, stop, out, proc_num, assert_intr=False):
+def run_isa_test(isaHost, isa_input, stop, out, proc_num, assert_intr=False, timeout=None):
     ret = proc_state.NORMAL
-   
-    timer = Timer(ISA_TIME_LIMIT, isa_timeout, [out, stop, proc_num])
+
+    timer = Timer(timeout if timeout is not None else ISA_TIME_LIMIT, isa_timeout, [out, stop, proc_num])
     timer.start()
     isa_ret = isaHost.run_test(isa_input, assert_intr)
     timer.cancel()

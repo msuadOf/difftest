@@ -39,6 +39,8 @@ fi
 
 docker exec -i "${CONTAINER_NAME}" /bin/bash -lc '
 #(cd /home/host/difftest/difuzz-rtl && ./setup.sh)
+export PYTHONIOENCODING=utf-8
+export LANG=C.UTF-8
 export PYTHONPATH=$PYTHONPATH:/home/host/difftest/difuzz-rtl/Fuzzer/RTLSim/src
 export PYTHONPATH=$PYTHONPATH:/home/host/difftest/difuzz-rtl/Fuzzer/src
 export PYTHONPATH=$PYTHONPATH:/home/host/difftest/difuzz-rtl/Fuzzer
@@ -51,6 +53,6 @@ make -C /home/host/difftest/difuzz-rtl/run_difftest \
      VFILE=SmallBoomTile_v1.2_state \
      TOPLEVEL=BoomTile \
      NUM_ITER=100 \
-     ELF_FILE=/home/host/difftest/difuzz-rtl/Fuzzer/out/12.elf \
+     ELF_DIR=/home/host/difftest/elfs \
      OUT=out
 '

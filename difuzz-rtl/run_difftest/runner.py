@@ -1,6 +1,8 @@
 import os
 import sys
 
+import struct
+
 from cocotb.decorators import coroutine
 from RTLSim.host import ILL_MEM, SUCCESS, TIME_OUT, ASSERTION_FAIL
 from src.utils import setup, run_isa_test
@@ -8,7 +10,6 @@ from src.multicore_manager import proc_state
 
 def parse_elf_symbols(elf_file, out_dir):
     symbols = {}
-    import struct
     try:
         from elftools.elf.elffile import ELFFile
         from elftools.elf.sections import SymbolTableSection
@@ -42,19 +43,20 @@ def parse_elf_symbols(elf_file, out_dir):
 
         if '_start' not in symbols:
             raise KeyError("The provided ELF file MUST contain a '_start' symbol.")
+        if '_end_main' not in symbols:
+            raise KeyError("The provided ELF file MUST contain a '_end_main' symbol.")
+        if 'tohost' not in symbols:
+            raise KeyError("The provided ELF file MUST contain a 'tohost' symbol.")
+        if 'begin_signature' not in symbols:
+            raise KeyError("The provided ELF file MUST contain a 'begin_signature' symbol.")
+        if 'end_signature' not in symbols:
+            raise KeyError("The provided ELF file MUST contain a 'end_signature' symbol.")
 
-        # 补齐某些可能的缺失使得 check 和 host.py 模块不会爆 KeyError
-        # 对于外部纯执行而没有随机读写段的汇编，这尤为重要
-        start_a = symbols['_start']
-        if '_end_main' not in symbols: symbols['_end_main'] = start_a + 0x1000
-        if 'tohost' not in symbols: symbols['tohost'] = start_a + 0x2000
-        if 'begin_signature' not in symbols: symbols['begin_signature'] = start_a + 0x3000
-        if 'end_signature' not in symbols: symbols['end_signature'] = start_a + 0x3000
         for n in range(6):
             if f'_random_data{n}' not in symbols:
-                symbols[f'_random_data{n}'] = start_a + 0x4000
+                raise KeyError(f"The provided ELF file MUST contain a '_random_data{n}' symbol.")
             if f'_end_data{n}' not in symbols:
-                symbols[f'_end_data{n}'] = start_a + 0x4000
+                raise KeyError(f"The provided ELF file MUST contain a '_end_data{n}' symbol.")
 
         def read_elf_range(addr, size):
             chunks = bytearray()
@@ -102,25 +104,60 @@ def parse_elf_symbols(elf_file, out_dir):
                 data_bytes = read_elf_range(start_d, size)
                 for i in range(0, size, 8):
                     word_bytes = data_bytes[i:i + 8]
-                    # 小端序解包为 64 位无符号整数
                     word = struct.unpack('<Q', word_bytes.ljust(8, b'\x00'))[0]
                     random_data.append(word)
 
     return symbols, random_data
 
+
+def prepare_elf_input(elf_file, out_dir, max_cycles=100000):
+    """将单个 ELF 文件转换为 RTL 和 ISA 仿真输入（rtlInput + isaInput）"""
+    import subprocess
+
+    symbols, random_data = parse_elf_symbols(elf_file, out_dir)
+
+    hex_file = os.path.join(out_dir, 'elf_payload.hex')
+    subprocess.call([
+        'riscv64-unknown-elf-elf2hex',
+        '--bit-width', '64',
+        '--input', elf_file,
+        '--output', hex_file,
+    ])
+
+    # 补零防越界（host.py 会多读 36 字节）
+    with open(hex_file, 'a') as f:
+        for _ in range(16):
+            f.write('0000000000000000\n')
+
+    intr_file = os.path.join(out_dir, 'dummy.intr')
+    open(intr_file, 'w').close()
+
+    from RTLSim.host import rtlInput
+    from ISASim.host import isaInput
+
+    rtl_input = rtlInput(hex_file, intr_file, random_data, symbols, max_cycles)
+    isa_input = isaInput(elf_file, intr_file)
+
+    return rtl_input, isa_input, symbols
+
+
 @coroutine
-def RunDifftest(dut, toplevel, template='../Fuzzer/Template', elf_file='', out='output', debug=False):
+def RunDifftest(dut, toplevel, template='../Fuzzer/Template',
+                elf_file='', elf_dir='', out='output', max_cycles=100000, debug=False):
     """
-    Difftest 主协程，负责运行 RTL 仿真(Verilator)，并报告执行结果。
+    Difftest 主协程，支持批量 ELF 执行。
+
+    核心思路（与 Fuzzer.py 一致）：
+      setup() 只调用一次 → 循环中每次调用 rtlHost.run_test()，
+      run_test 内部会完成 memory 重建、hex 加载、硬件 reset、adapter start/stop，
+      无需重启整个 Verilator 仿真环境。
     """
 
-    # 在这个简单的差分测试脚本中，我们不使用多线程/用例最小化/覆盖率引导测试的功能
-    # setup 函数将返回需要的组件实例
+    # setup 只做一次，仿真环境（rtlHost/isaHost/checker）在整个批次中复用
     (mutator, preprocessor, isaHost, rtlHost, checker) = setup(
         dut, toplevel, template, out, 0, debug, minimizing=False, no_guide=True
     )
 
-    # 辅助打印函数，若 highlight=True 或处于 debug 模式则打印
     def debug_p(msg, highlight=False):
         if highlight or debug:
             if highlight:
@@ -128,88 +165,121 @@ def RunDifftest(dut, toplevel, template='../Fuzzer/Template', elf_file='', out='
             else:
                 print(msg)
 
-    print('\x1b[1;32m[Difftest] Start\x1b[0m')
-
-    assert_intr = False
-    rtl_input = None
-    isa_input = None
-
-    if elf_file:
-        import subprocess
-        # 外部 ELF 包含符号流执行模式
-        debug_p(f'[Difftest] Loading .elf: {elf_file}', True)
-
-        # 1. 提取和验证符号
-        symbols, random_data = parse_elf_symbols(elf_file, out)
-
-        # 2. 将 ELF 转换成 HEX 供 RTLSim 加载。如果你的环境变量没有配置 elf2hex，这步会报错
-        hex_file = os.path.join(out, 'elf_payload.hex')
-        # DifuzzRTL 配置中一般系统编进了 riscv64-unknown-elf-elf2hex 或 elf2hex
-        subprocess.call(['riscv64-unknown-elf-elf2hex', '--bit-width', '64', '--input', elf_file, '--output', hex_file])
-
-        # 因为 ELF 解析出来的末尾可能贴得很紧，且由于预生成的 elf2hex 文件行数固定，
-        # host.py 会有多读 36 字节的情况导致 IndexError。
-        # 这里我们在 hex 文件末尾手动再补零 (16 行空数据=128字节)，以满足防越界要求。
-        with open(hex_file, 'a') as f:
-            for _ in range(16):
-                f.write('0000000000000000\n')
-
-        # 3. 提供空的 dummy 假中断文件
-        intr_file = os.path.join(out, 'dummy.intr')
-        open(intr_file, 'w').close()
-
-        from RTLSim.host import rtlInput
-        from ISASim.host import isaInput
-
-        rtl_input = rtlInput(hex_file, intr_file, random_data, symbols, 100000)
-        isa_input = isaInput(elf_file, intr_file)
-
+    # ── 收集待测试 ELF 文件 ──
+    elf_files = []
+    if elf_dir:
+        # 用 os.walk 递归查找，避免 glob ** 在某些环境/版本下不可靠
+        for root, _dirs, files in os.walk(elf_dir):
+            for f in files:
+                if f.endswith('.elf'):
+                    elf_files.append(os.path.join(root, f))
+        elf_files.sort()
+        if not elf_files:
+            debug_p(f'[Difftest] ELF 目录 "{elf_dir}" 中未找到 .elf 文件', True)
+            return
+        debug_p(f'[Difftest] 批量模式：在 "{elf_dir}" 中找到 {len(elf_files)} 个 ELF 文件', True)
+    elif elf_file:
+        elf_files = [elf_file]
     else:
-        # 未提供 elf_file
-        raise ValueError('ELF_FILE must be specified!')
+        raise ValueError('ELF_FILE 或 ELF_DIR 必须指定其中一个！')
 
-    # 确保 rtl_input 已准备就绪，执行 RTL 仿真
-    if rtl_input:
+    total = len(elf_files)
+    passed = 0
+    failed = 0
+    results = []
+
+    print(f'\x1b[1;32m[Difftest] 开始批量执行 ({total} 个测试)\x1b[0m')
+
+    for idx, current_elf in enumerate(elf_files):
+        elf_name = os.path.basename(current_elf)
+        debug_p(
+            f'\x1b[1;36m[Difftest] [{idx + 1}/{total}] 加载: {elf_name}\x1b[0m',
+            True,
+        )
+
+        # 每个 ELF 使用独立子目录，避免 hex/symbols 等中间文件冲突
+        test_out = os.path.join(out, f'test_{idx:04d}')
+        os.makedirs(test_out, exist_ok=True)
+
+        # ── 1. 解析 ELF 并生成仿真输入 ──
+        try:
+            rtl_input, isa_input, symbols = prepare_elf_input(
+                current_elf, test_out, max_cycles,
+            )
+        except Exception as e:
+            debug_p(f'[Difftest] [{idx + 1}/{total}] 解析错误: {e}', True)
+            failed += 1
+            results.append((elf_name, 'Parse Error', str(e)))
+            continue
+
+        assert_intr = False
         stop = [proc_state.NORMAL]
 
-        if isa_input:
-            # 只有需要 ISA 对比时才运行 Spike
-            ret = run_isa_test(isaHost, isa_input, stop, out, 0, assert_intr)
-            if ret == proc_state.ERR_ISA_TIMEOUT:
-                debug_p('[Difftest] ISA Timeout', True)
-                return
-            elif ret == proc_state.ERR_ISA_ASSERT:
-                debug_p('[Difftest] ISA Assertion Failed', True)
-                return
+        # ── 2. 运行 ISA 仿真（Spike） ──
+        ret = run_isa_test(isaHost, isa_input, stop, test_out, 0, assert_intr, timeout=2)
+        if ret == proc_state.ERR_ISA_TIMEOUT:
+            debug_p(f'[Difftest] [{idx + 1}/{total}] ISA 超时', True)
+            failed += 1
+            results.append((elf_name, 'ISA Timeout', '-'))
+            continue
+        elif ret == proc_state.ERR_ISA_ASSERT:
+            debug_p(f'[Difftest] [{idx + 1}/{total}] ISA 断言失败', True)
+            failed += 1
+            results.append((elf_name, 'ISA Assert Fail', '-'))
+            continue
 
+        # ── 3. 运行 RTL 仿真（内部 reset 状态，无需重启仿真环境） ──
         try:
-            # yield 交出控制权进行 cocotb RTL 时钟仿真
             (ret, coverage) = yield rtlHost.run_test(rtl_input, assert_intr)
         except Exception as e:
             import traceback
             traceback_str = traceback.format_exc()
-            debug_p('[Difftest] RTL Simulation Error: ' + str(e) + '\n' + traceback_str, True)
-            return
+            debug_p(
+                f'[Difftest] [{idx + 1}/{total}] RTL 仿真错误: {e}\n{traceback_str}',
+                True,
+            )
+            failed += 1
+            results.append((elf_name, 'RTL Error', str(e)))
+            continue
 
-        match = False
+        # ── 4. 对比结果 ──
         cause = '-'
-
-        # RTL 仿真正常结束后，对比 symbols 定义的内存/寄存器状态
+        match = False
         if ret == SUCCESS:
             match = checker.check(symbols)
         elif ret == ILL_MEM:
-            # 内存访问越界 DRAM 区域
             match = True
-            debug_p('[Difftest] Memory access outside DRAM', True)
+            debug_p(f'[Difftest] [{idx + 1}/{total}] 内存访问越界 DRAM 区域', True)
 
-        # 对于 elf 模式，如果有 match 失败的情况则报 Mismatch
         if not match or ret not in [SUCCESS, ILL_MEM]:
             if ret == TIME_OUT:          cause = 'Timeout'
             elif ret == ASSERTION_FAIL:  cause = 'Assertion Fail'
             else:                        cause = 'Mismatch'
-            debug_p(f'[Difftest] FAIL [{cause}]', True)
+            debug_p(
+                f'\x1b[1;31m[Difftest] [{idx + 1}/{total}] FAIL [{cause}] - {elf_name}\x1b[0m',
+                True,
+            )
+            failed += 1
+            results.append((elf_name, 'FAIL', cause))
         else:
-            print('\x1b[1;32m[Difftest] PASS: ISA and RTL match!\x1b[0m')
-    else:
-        # 未提供 rtl_input，直接报错
-        raise ValueError('[Difftest] Compilation Failed')
+            print(f'\x1b[1;32m[Difftest] [{idx + 1}/{total}] PASS - {elf_name}\x1b[0m')
+            passed += 1
+            results.append((elf_name, 'PASS', '-'))
+
+    # ── 汇总报告 ──
+    print(f'\n\x1b[1;32m{"=" * 60}\x1b[0m')
+    print(f'\x1b[1;32m[Difftest] 批量测试汇总: {passed}/{total} 通过, {failed}/{total} 失败\x1b[0m')
+    print(f'\x1b[1;32m{"=" * 60}\x1b[0m')
+    for name, status, detail in results:
+        color = '\x1b[1;32m' if status == 'PASS' else '\x1b[1;31m'
+        line = f'  {color}{status:15s}\x1b[0m {name}'
+        if detail != '-':
+            line += f' ({detail})'
+        print(line)
+
+    # 写结果到文件
+    result_file = os.path.join(out, 'results.txt')
+    with open(result_file, 'w') as f:
+        for name, status, detail in results:
+            f.write(f'{status}\t{name}\t{detail}\n')
+    debug_p(f'[Difftest] 结果已写入 {result_file}')
