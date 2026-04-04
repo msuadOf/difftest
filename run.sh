@@ -54,5 +54,7 @@ make -C /home/host/difftest/difuzz-rtl/run_difftest \
      TOPLEVEL=BoomTile \
      NUM_ITER=100 \
      ELF_DIR=/home/host/difftest/elfs \
+     MAX_CYCLES=50000 \
+	 DEBUG=1 \
      OUT=out
 '

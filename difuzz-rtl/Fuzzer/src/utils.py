@@ -53,12 +53,12 @@ def isa_timeout(out, stop, proc_num):
 
     stop[0] = proc_state.ERR_ISA_TIMEOUT
 
-def run_isa_test(isaHost, isa_input, stop, out, proc_num, assert_intr=False, timeout=None):
+def run_isa_test(isaHost, isa_input, stop, out, proc_num, assert_intr=False, timeout=None, trace_file=None):
     ret = proc_state.NORMAL
 
     timer = Timer(timeout if timeout is not None else ISA_TIME_LIMIT, isa_timeout, [out, stop, proc_num])
     timer.start()
-    isa_ret = isaHost.run_test(isa_input, assert_intr)
+    isa_ret = isaHost.run_test(isa_input, assert_intr, trace_file=trace_file)
     timer.cancel()
 
     if stop[0] == proc_state.ERR_ISA_TIMEOUT:

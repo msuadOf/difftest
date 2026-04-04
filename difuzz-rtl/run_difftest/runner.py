@@ -1,12 +1,27 @@
 import os
 import sys
-
+import subprocess
 import struct
+from contextlib import contextmanager
 
 from cocotb.decorators import coroutine
 from RTLSim.host import ILL_MEM, SUCCESS, TIME_OUT, ASSERTION_FAIL
 from src.utils import setup, run_isa_test
 from src.multicore_manager import proc_state
+
+
+@contextmanager
+def redirect_fd(fd_num, filepath):
+    """将 C 层 fd（如 Verilator $fwrite）重定向到文件"""
+    saved = os.dup(fd_num)
+    target = os.open(filepath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    os.dup2(target, fd_num)
+    try:
+        yield
+    finally:
+        os.dup2(saved, fd_num)
+        os.close(target)
+        os.close(saved)
 
 def parse_elf_symbols(elf_file, out_dir):
     symbols = {}
@@ -112,8 +127,6 @@ def parse_elf_symbols(elf_file, out_dir):
 
 def prepare_elf_input(elf_file, out_dir, max_cycles=100000):
     """将单个 ELF 文件转换为 RTL 和 ISA 仿真输入（rtlInput + isaInput）"""
-    import subprocess
-
     symbols, random_data = parse_elf_symbols(elf_file, out_dir)
 
     hex_file = os.path.join(out_dir, 'elf_payload.hex')
@@ -216,7 +229,10 @@ def RunDifftest(dut, toplevel, template='../Fuzzer/Template',
         stop = [proc_state.NORMAL]
 
         # ── 2. 运行 ISA 仿真（Spike） ──
-        ret = run_isa_test(isaHost, isa_input, stop, test_out, 0, assert_intr, timeout=2)
+        elf_stem = os.path.splitext(elf_name)[0]
+        isa_trace = os.path.join(test_out, f'{elf_stem}.isa_trace.log') if debug else None
+        ret = run_isa_test(isaHost, isa_input, stop, test_out, 0, assert_intr,
+                           timeout=2, trace_file=isa_trace)
         if ret == proc_state.ERR_ISA_TIMEOUT:
             debug_p(f'[Difftest] [{idx + 1}/{total}] ISA 超时', True)
             failed += 1
@@ -228,9 +244,19 @@ def RunDifftest(dut, toplevel, template='../Fuzzer/Template',
             results.append((elf_name, 'ISA Assert Fail', '-'))
             continue
 
-        # ── 3. 运行 RTL 仿真（内部 reset 状态，无需重启仿真环境） ──
+        # ── 3. 运行 RTL 仿真 ──
         try:
-            (ret, coverage) = yield rtlHost.run_test(rtl_input, assert_intr)
+            if debug:
+                rtl_trace = os.path.join(test_out, f'{elf_stem}.rtl_trace.log')
+                with redirect_fd(1, rtl_trace):
+                    (ret, coverage) = yield rtlHost.run_test(rtl_input, assert_intr)
+                # spike-dasm 反汇编 DASM(hex) → 可读指令
+                disasm_file = os.path.join(test_out, f'{elf_stem}.rtl_trace_disasm.log')
+                spike_dasm = os.path.join(os.path.dirname(os.environ['SPIKE']), 'spike-dasm')
+                subprocess.run(f'{spike_dasm} < {rtl_trace} > {disasm_file}',
+                               shell=True, stderr=subprocess.DEVNULL)
+            else:
+                (ret, coverage) = yield rtlHost.run_test(rtl_input, assert_intr)
         except Exception as e:
             import traceback
             traceback_str = traceback.format_exc()
